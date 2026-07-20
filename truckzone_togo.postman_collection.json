@@ -1,0 +1,1289 @@
+{
+  "info": {
+    "name": "TruckZone Togo API",
+    "_postman_id": "truckzone-togo-api-collection",
+    "description": "Collection complète pour tester l'API TruckZone Togo — 54 routes organisées en 6 dossiers.\n\nUtilisation :\n1. Importer l'environnement truckzone_togo-dev.postman_environment.json\n2. Exécuter le dossier Authentification en premier pour obtenir les tokens\n3. Les tokens sont automatiquement sauvegardés dans les variables de session",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "admin_token", "value": "", "type": "string" },
+    { "key": "chauffeur_token", "value": "", "type": "string" },
+    { "key": "proprietaire_token", "value": "", "type": "string" },
+    { "key": "mecanicien_token", "value": "", "type": "string" },
+    { "key": "user_id", "value": "", "type": "string" },
+    { "key": "other_user_id", "value": "", "type": "string" },
+    { "key": "camion_id", "value": "", "type": "string" },
+    { "key": "offre_id", "value": "", "type": "string" },
+    { "key": "conversation_id", "value": "", "type": "string" },
+    { "key": "incident_id", "value": "", "type": "string" },
+    { "key": "assistance_id", "value": "", "type": "string" },
+    { "key": "notification_id", "value": "", "type": "string" },
+    { "key": "document_id", "value": "", "type": "string" }
+  ],
+  "item": [
+
+    {
+      "name": "Authentification",
+      "description": "Inscription, connexion, gestion du token JWT, mot de passe oublié. Exécuter ce dossier en PREMIER.",
+      "item": [
+
+        {
+          "name": "Register — Chauffeur",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Has id', () => pm.expect(d).to.have.property('id'));",
+                  "pm.environment.set('user_id', d.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/register", "host": ["{{base_url}}"], "path": ["api", "auth", "register"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"nom_complet\": \"Kofi Amedee\",\n  \"email\": \"kofi.chauffeur@email.com\",\n  \"password\": \"Chauffeur@123\",\n  \"confirm_password\": \"Chauffeur@123\",\n  \"telephone\": \"+22891234567\",\n  \"role\": \"chauffeur\"\n}" }
+          }
+        },
+
+        {
+          "name": "Register — Propriétaire",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('other_user_id', d.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/register", "host": ["{{base_url}}"], "path": ["api", "auth", "register"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"nom_complet\": \"Abi Console\",\n  \"email\": \"abi.proprietaire@email.com\",\n  \"password\": \"Proprio@123\",\n  \"confirm_password\": \"Proprio@123\",\n  \"telephone\": \"+22892345678\",\n  \"role\": \"proprietaire\"\n}" }
+          }
+        },
+
+        {
+          "name": "Register — Mécanicien",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/register", "host": ["{{base_url}}"], "path": ["api", "auth", "register"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"nom_complet\": \"Amadou Méca\",\n  \"email\": \"amadou.meca@email.com\",\n  \"password\": \"Meca@123\",\n  \"confirm_password\": \"Meca@123\",\n  \"telephone\": \"+22893456789\",\n  \"role\": \"mecanicien\"\n}" }
+          }
+        },
+
+        {
+          "name": "Register Admin — DOIT ÉCHOUER (422)",
+          "description": "Le rôle admin n'est plus autorisé à l'inscription. Ce test doit retourner 422.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 422 — Admin registration rejected', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/register", "host": ["{{base_url}}"], "path": ["api", "auth", "register"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"nom_complet\": \"Admin TogoTruck\",\n  \"email\": \"admin@togotruckconnect.com\",\n  \"password\": \"Admin@123\",\n  \"confirm_password\": \"Admin@123\",\n  \"telephone\": \"+22890123456\",\n  \"role\": \"admin\"\n}" }
+          }
+        },
+
+        {
+          "name": "Login — Chauffeur",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has access_token', () => pm.expect(d).to.have.property('access_token'));",
+                  "pm.environment.set('token', d.access_token);",
+                  "pm.environment.set('chauffeur_token', d.access_token);",
+                  "if (d.user) pm.environment.set('user_id', d.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/login", "host": ["{{base_url}}"], "path": ["api", "auth", "login"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"kofi.chauffeur@email.com\",\n  \"password\": \"Chauffeur@123\"\n}" }
+          }
+        },
+
+        {
+          "name": "Login — Propriétaire",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.environment.set('proprietaire_token', d.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/login", "host": ["{{base_url}}"], "path": ["api", "auth", "login"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"abi.proprietaire@email.com\",\n  \"password\": \"Proprio@123\"\n}" }
+          }
+        },
+
+        {
+          "name": "Login Admin — Dédié",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Role is admin', () => { if (d.user) pm.expect(d.user.role).to.eql('admin'); });",
+                  "pm.environment.set('admin_token', d.access_token);",
+                  "pm.environment.set('token', d.access_token);",
+                  "if (d.user) pm.environment.set('user_id', d.user.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/admin/login", "host": ["{{base_url}}"], "path": ["api", "auth", "admin", "login"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"admin@togotruckconnect.com\",\n  \"password\": \"Admin@2026\"\n}" }
+          }
+        },
+
+        {
+          "name": "Login Admin — Mauvais mot de passe (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/admin/login", "host": ["{{base_url}}"], "path": ["api", "auth", "admin", "login"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"admin@togotruckconnect.com\",\n  \"password\": \"MauvaisMotDePasse\"\n}" }
+          }
+        },
+
+        {
+          "name": "Login Admin — Non-admin refusé (403)",
+          "description": "Un chauffeur ne peut pas se connecter via /admin/login.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/admin/login", "host": ["{{base_url}}"], "path": ["api", "auth", "admin", "login"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"kofi.chauffeur@email.com\",\n  \"password\": \"Chauffeur@123\"\n}" }
+          }
+        },
+
+        {
+          "name": "GET /api/auth/me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has role', () => pm.expect(d).to.have.property('role'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "PUT /api/auth/me",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"nom_complet\": \"Kofi Amedee Jr\",\n  \"telephone\": \"+22891234568\"\n}" }
+          }
+        },
+
+        {
+          "name": "PUT /api/auth/change-password",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/auth/change-password", "host": ["{{base_url}}"], "path": ["api", "auth", "change-password"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"old_password\": \"Chauffeur@123\",\n  \"new_password\": \"NewPass@123\"\n}" }
+          }
+        },
+
+        {
+          "name": "POST /api/auth/forgot-password",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/forgot-password", "host": ["{{base_url}}"], "path": ["api", "auth", "forgot-password"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"kofi.chauffeur@email.com\"\n}" }
+          }
+        },
+
+        {
+          "name": "POST /api/auth/verify-otp",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/verify-otp", "host": ["{{base_url}}"], "path": ["api", "auth", "verify-otp"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"kofi.chauffeur@email.com\",\n  \"code\": \"123456\"\n}" }
+          }
+        },
+
+        {
+          "name": "POST /api/auth/reset-password",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/reset-password", "host": ["{{base_url}}"], "path": ["api", "auth", "reset-password"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"kofi.chauffeur@email.com\",\n  \"code\": \"123456\",\n  \"new_password\": \"Reset@1234\"\n}" }
+          }
+        },
+
+        {
+          "name": "POST /api/auth/refresh",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "auth", "refresh"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"refresh_token\": \"{{token}}\"\n}" }
+          }
+        },
+
+        {
+          "name": "POST /api/auth/logout",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/logout", "host": ["{{base_url}}"], "path": ["api", "auth", "logout"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Utilisateurs",
+      "description": "Gestion des profils chauffeurs, propriétaires et mécaniciens + assistance.",
+      "item": [
+
+        {
+          "name": "GET /api/chauffeurs/",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/chauffeurs/?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "chauffeurs", ""], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "GET /api/chauffeurs/me",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/chauffeurs/me", "host": ["{{base_url}}"], "path": ["api", "chauffeurs", "me"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "POST /api/chauffeurs/me — Create profil",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/chauffeurs/me", "host": ["{{base_url}}"], "path": ["api", "chauffeurs", "me"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"numero_permis\": \"TG-2020-12345\",\n  \"categorie_permis\": \"C\",\n  \"annees_experience\": 5,\n  \"types_transport\": [\"marchandises\", \"conteneurs\"],\n  \"zones_circulation\": [\"Lomé\", \"Kara\", \"Sokodé\"],\n  \"disponibilite\": \"disponible\",\n  \"bio\": \"Chauffeur expérimenté.\"\n}" }
+          }
+        },
+        {
+          "name": "PUT /api/chauffeurs/me — Update profil",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/chauffeurs/me", "host": ["{{base_url}}"], "path": ["api", "chauffeurs", "me"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"annees_experience\": 6,\n  \"bio\": \"Chauffeur expert.\"\n}" }
+          }
+        },
+        {
+          "name": "PUT /api/chauffeurs/me/statut",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/chauffeurs/me/statut", "host": ["{{base_url}}"], "path": ["api", "chauffeurs", "me", "statut"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"disponibilite\": \"disponible\"\n}" }
+          }
+        },
+        {
+          "name": "GET /api/chauffeurs/{chauffeur_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/chauffeurs/{{user_id}}", "host": ["{{base_url}}"], "path": ["api", "chauffeurs", "{{user_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "POST /api/chauffeurs/me/documents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.environment.set('document_id', d.id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/chauffeurs/me/documents", "host": ["{{base_url}}"], "path": ["api", "chauffeurs", "me", "documents"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "GET /api/chauffeurs/me/documents",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/chauffeurs/me/documents", "host": ["{{base_url}}"], "path": ["api", "chauffeurs", "me", "documents"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/proprietaires/",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/proprietaires/?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "proprietaires", ""], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] }
+          }
+        },
+        {
+          "name": "GET /api/proprietaires/me",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "POST /api/proprietaires/me — Create profil",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"nom_entreprise\": \"Console Transport SARL\",\n  \"type_activite\": \"transport\",\n  \"adresse\": \"Boulevard du 13 Janvier, Lomé\",\n  \"localisation_lat\": 6.1723,\n  \"localisation_lng\": 1.2255,\n  \"bio\": \"Transport routier depuis 2015.\"\n}" }
+          }
+        },
+        {
+          "name": "PUT /api/proprietaires/me — Update profil",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"nom_entreprise\": \"Console Transport SA\",\n  \"bio\": \"Transport de qualité.\"\n}" }
+          }
+        },
+        {
+          "name": "GET /api/proprietaires/{proprietaire_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/proprietaires/{{other_user_id}}", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "{{other_user_id}}"] }
+          }
+        },
+
+        {
+          "name": "GET /api/mecaniciens/",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", ""], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "GET /api/mecaniciens/me",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/me", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", "me"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "POST /api/mecaniciens/me — Create profil",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/me", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", "me"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"specialites\": [\"Mécanique générale\"],\n  \"annees_experience\": 8,\n  \"certifications\": [\"Certificat pro\"],\n  \"tarification\": \"Payant\",\n  \"localisation_lat\": 6.1723,\n  \"localisation_lng\": 1.2255,\n  \"rayon_intervention\": 30,\n  \"bio\": \"Mécanicien spécialisé.\"\n}" }
+          }
+        },
+        {
+          "name": "PUT /api/mecaniciens/me — Update profil",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/me", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", "me"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"rayon_intervention\": 50\n}" }
+          }
+        },
+        {
+          "name": "GET /api/mecaniciens/proches",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/mecaniciens/proches?lat=6.1723&lng=1.2255&rayon_km=50",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mecaniciens", "proches"],
+              "query": [
+                { "key": "lat", "value": "6.1723" },
+                { "key": "lng", "value": "1.2255" },
+                { "key": "rayon_km", "value": "50" }
+              ]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "GET /api/mecaniciens/{mecanicien_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/{{user_id}}", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", "{{user_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "POST /api/mecaniciens/assistance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('assistance_id', d.id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/assistance", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", "assistance"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"type_panne\": \"Mécanique\",\n  \"description\": \"Moteur ne démarre plus\",\n  \"urgence\": \"Haute\",\n  \"localisation_lat\": 6.1723,\n  \"localisation_lng\": 1.2255,\n  \"vehicule_description\": \"TG-1234-AB Mercedes\"\n}" }
+          }
+        },
+        {
+          "name": "GET /api/mecaniciens/assistance/{id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/assistance/{{assistance_id}}", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", "assistance", "{{assistance_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "GET /api/mecaniciens/assistance/mes-demandes",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/assistance/mes-demandes", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", "assistance", "mes-demandes"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "PUT /api/mecaniciens/assistance/{id}/statut",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/mecaniciens/assistance/{{assistance_id}}/statut", "host": ["{{base_url}}"], "path": ["api", "mecaniciens", "assistance", "{{assistance_id}}", "statut"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"statut\": \"en_cours\"\n}" }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Administration",
+      "description": "Routes réservées aux administrateurs. Utiliser le token admin (admin_token).",
+      "item": [
+
+        {
+          "name": "POST /api/auth/admin/login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Role is admin', () => { if (d.user) pm.expect(d.user.role).to.eql('admin'); });",
+                  "pm.environment.set('admin_token', d.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/auth/admin/login", "host": ["{{base_url}}"], "path": ["api", "auth", "admin", "login"] },
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"admin@togotruckconnect.com\",\n  \"password\": \"Admin@2026\"\n}" }
+          }
+        },
+
+        {
+          "name": "GET /api/auth/me (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Role is admin', () => pm.expect(d.role).to.eql('admin'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/auth/me", "host": ["{{base_url}}"], "path": ["api", "auth", "me"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/admin/stats",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has total_utilisateurs', () => pm.expect(d).to.have.property('total_utilisateurs'));",
+                  "pm.test('Has chauffeurs', () => pm.expect(d).to.have.property('chauffeurs'));",
+                  "pm.test('Has proprietaires', () => pm.expect(d).to.have.property('proprietaires'));",
+                  "pm.test('Has mecaniciens', () => pm.expect(d).to.have.property('mecaniciens'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/stats", "host": ["{{base_url}}"], "path": ["api", "admin", "stats"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/admin/stats — Sans token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/stats", "host": ["{{base_url}}"], "path": ["api", "admin", "stats"] }
+          }
+        },
+
+        {
+          "name": "GET /api/admin/stats — Non-admin (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/stats", "host": ["{{base_url}}"], "path": ["api", "admin", "stats"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{chauffeur_token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/admin/users",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Is array', () => pm.expect(d).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/users?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "admin", "users"], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/admin/users?role=chauffeur",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/users?role=chauffeur", "host": ["{{base_url}}"], "path": ["api", "admin", "users"], "query": [{ "key": "role", "value": "chauffeur" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/admin/users/{user_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/users/{{user_id}}", "host": ["{{base_url}}"], "path": ["api", "admin", "users", "{{user_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "PUT /api/admin/users/{user_id}/status — Toggle",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/admin/users/{{user_id}}/status", "host": ["{{base_url}}"], "path": ["api", "admin", "users", "{{user_id}}", "status"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/admin/documents",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/documents?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "admin", "documents"], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "PUT /api/admin/documents/{id}/statut",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/admin/documents/{{document_id}}/statut?statut=valide", "host": ["{{base_url}}"], "path": ["api", "admin", "documents", "{{document_id}}", "statut"], "query": [{ "key": "statut", "value": "valide" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/admin/incidents",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/incidents?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "admin", "incidents"], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{admin_token}}" }]
+          }
+        },
+
+        {
+          "name": "POST /api/notifications/ — Create notification",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.environment.set('notification_id', d.id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/notifications/", "host": ["{{base_url}}"], "path": ["api", "notifications", ""] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{admin_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"destinataire_id\": \"{{user_id}}\",\n  \"titre\": \"Bienvenue sur TruckZone\",\n  \"contenu\": \"Votre compte a été activé.\",\n  \"type\": \"admin\"\n}" }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Camions",
+      "description": "Gestion des camions et offres d'emploi pour les propriétaires.",
+      "item": [
+
+        {
+          "name": "GET /api/proprietaires/me/camions",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/camions", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "camions"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "POST /api/proprietaires/me/camions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('camion_id', d.id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/camions", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "camions"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"immatriculation\": \"TG-1234-AB\",\n  \"marque\": \"Mercedes\",\n  \"modele\": \"Actros 1845\",\n  \"annee\": 2020,\n  \"type_camion\": \"porteur\",\n  \"capacite_charge\": 20.0,\n  \"etat\": \"excellent\",\n  \"description\": \"Camion en excellent état.\"\n}" }
+          }
+        },
+
+        {
+          "name": "GET /api/proprietaires/me/camions/{camion_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/camions/{{camion_id}}", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "camions", "{{camion_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "PUT /api/proprietaires/me/camions/{camion_id}",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/camions/{{camion_id}}", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "camions", "{{camion_id}}"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"etat\": \"bon\",\n  \"description\": \"Camion mis à jour.\"\n}" }
+          }
+        },
+
+        {
+          "name": "DELETE /api/proprietaires/me/camions/{camion_id}",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/camions/{{camion_id}}", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "camions", "{{camion_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "POST /api/proprietaires/me/camions/{id}/photos",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/camions/{{camion_id}}/photos", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "camions", "{{camion_id}}", "photos"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "DELETE /api/proprietaires/me/camions/{id}/photos/{photo_id}",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/camions/{{camion_id}}/photos/00000000-0000-0000-0000-000000000000", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "camions", "{{camion_id}}", "photos", "00000000-0000-0000-0000-000000000000"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/proprietaires/me/offres",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/offres", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "offres"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "POST /api/proprietaires/me/offres",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('offre_id', d.id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/offres", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "offres"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"titre\": \"Chauffeur Lomé-Kara\",\n  \"description\": \"Transport marchandises\",\n  \"type_contrat\": \"CDI\",\n  \"salaire_propose\": 250000,\n  \"zone_travail\": \"Lomé - Kara\",\n  \"date_debut\": \"2026-08-01\"\n}" }
+          }
+        },
+
+        {
+          "name": "GET /api/proprietaires/me/offres/{offre_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/offres/{{offre_id}}", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "offres", "{{offre_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "PUT /api/proprietaires/me/offres/{offre_id}",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/offres/{{offre_id}}", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "offres", "{{offre_id}}"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"salaire_propose\": 280000\n}" }
+          }
+        },
+
+        {
+          "name": "DELETE /api/proprietaires/me/offres/{offre_id}",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{base_url}}/api/proprietaires/me/offres/{{offre_id}}", "host": ["{{base_url}}"], "path": ["api", "proprietaires", "me", "offres", "{{offre_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Messagerie",
+      "description": "Système de messagerie interne — conversations et messages. Accessible à tous les utilisateurs authentifiés.",
+      "item": [
+
+        {
+          "name": "GET /api/conversations/",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Is array', () => pm.expect(d).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/conversations/?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "conversations", ""], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "POST /api/conversations/",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('conversation_id', d.id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/conversations/", "host": ["{{base_url}}"], "path": ["api", "conversations", ""] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"participant_id\": \"{{other_user_id}}\"\n}" }
+          }
+        },
+
+        {
+          "name": "GET /api/conversations/{conversation_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/conversations/{{conversation_id}}", "host": ["{{base_url}}"], "path": ["api", "conversations", "{{conversation_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/conversations/{id}/messages",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/conversations/{{conversation_id}}/messages?skip=0&limit=50", "host": ["{{base_url}}"], "path": ["api", "conversations", "{{conversation_id}}", "messages"], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "50" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "POST /api/conversations/{id}/messages",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/conversations/{{conversation_id}}/messages", "host": ["{{base_url}}"], "path": ["api", "conversations", "{{conversation_id}}", "messages"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"contenu\": \"Bonjour, je suis intéressé par votre offre !\",\n  \"type\": \"texte\"\n}" }
+          }
+        },
+
+        {
+          "name": "GET /api/incidents/",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/incidents/?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "incidents", ""], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "POST /api/incidents/",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('incident_id', d.id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/incidents/", "host": ["{{base_url}}"], "path": ["api", "incidents", ""] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"type_incident\": \"Accident\",\n  \"date_incident\": \"2026-07-19T14:30:00\",\n  \"localisation_lat\": 6.1723,\n  \"localisation_lng\": 1.2255,\n  \"description\": \"Collision entre deux camions\",\n  \"gravite\": \"Grave\",\n  \"vehicules_impliques\": [\"TG-1234-AB\"],\n  \"victimes\": false,\n  \"nombre_victimes\": 0\n}" }
+          }
+        },
+
+        {
+          "name": "GET /api/incidents/statistiques",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/incidents/statistiques", "host": ["{{base_url}}"], "path": ["api", "incidents", "statistiques"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/incidents/proches",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/incidents/proches?lat=6.1723&lng=1.2255&rayon_km=50",
+              "host": ["{{base_url}}"],
+              "path": ["api", "incidents", "proches"],
+              "query": [
+                { "key": "lat", "value": "6.1723" },
+                { "key": "lng", "value": "1.2255" },
+                { "key": "rayon_km", "value": "50" }
+              ]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/incidents/{incident_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/incidents/{{incident_id}}", "host": ["{{base_url}}"], "path": ["api", "incidents", "{{incident_id}}"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "PUT /api/incidents/{incident_id}",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/incidents/{{incident_id}}", "host": ["{{base_url}}"], "path": ["api", "incidents", "{{incident_id}}"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"statut\": \"en_cours\"\n}" }
+          }
+        },
+
+        {
+          "name": "POST /api/incidents/{id}/commentaire",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/incidents/{{incident_id}}/commentaire", "host": ["{{base_url}}"], "path": ["api", "incidents", "{{incident_id}}", "commentaire"] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"contenu\": \"Incident en cours de traitement.\"\n}" }
+          }
+        },
+
+        {
+          "name": "GET /api/incidents/{id}/commentaires",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/incidents/{{incident_id}}/commentaires", "host": ["{{base_url}}"], "path": ["api", "incidents", "{{incident_id}}", "commentaires"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Notifications",
+      "description": "Système de notifications — lister, compter, marquer lu. L'admin peut créer des notifications pour les utilisateurs.",
+      "item": [
+
+        {
+          "name": "GET /api/notifications/",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Is array', () => pm.expect(d).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/notifications/?skip=0&limit=20", "host": ["{{base_url}}"], "path": ["api", "notifications", ""], "query": [{ "key": "skip", "value": "0" }, { "key": "limit", "value": "20" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/notifications/ (non lues)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/notifications/?non_lues_seulement=true", "host": ["{{base_url}}"], "path": ["api", "notifications", ""], "query": [{ "key": "non_lues_seulement", "value": "true" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "GET /api/notifications/non-lues",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has non_lues', () => pm.expect(d).to.have.property('non_lues'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/notifications/non-lues", "host": ["{{base_url}}"], "path": ["api", "notifications", "non-lues"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "PUT /api/notifications/{id}/lu",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/notifications/{{notification_id}}/lu", "host": ["{{base_url}}"], "path": ["api", "notifications", "{{notification_id}}", "lu"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "PUT /api/notifications/tout-lu",
+          "request": {
+            "method": "PUT",
+            "url": { "raw": "{{base_url}}/api/notifications/tout-lu", "host": ["{{base_url}}"], "path": ["api", "notifications", "tout-lu"] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+
+        {
+          "name": "POST /api/notifications/ (admin only)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var d = pm.response.json();",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('notification_id', d.id || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/notifications/", "host": ["{{base_url}}"], "path": ["api", "notifications", ""] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{admin_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"destinataire_id\": \"{{user_id}}\",\n  \"titre\": \"Notification test\",\n  \"contenu\": \"Ceci est une notification de test.\",\n  \"type\": \"systeme\"\n}" }
+          }
+        },
+
+        {
+          "name": "POST /api/notifications/ — Non-admin (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{base_url}}/api/notifications/", "host": ["{{base_url}}"], "path": ["api", "notifications", ""] },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{chauffeur_token}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"destinataire_id\": \"{{user_id}}\",\n  \"titre\": \"Test\",\n  \"contenu\": \"Test\",\n  \"type\": \"systeme\"\n}" }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "WebSocket",
+      "description": "Connexions WebSocket pour le chat en temps réel et la présence.",
+      "item": [
+        {
+          "name": "WS /ws/chat/{conversation_id}",
+          "request": {
+            "method": "GET",
+            "url": "ws://localhost:8000/ws/chat/{{conversation_id}}?user_id={{user_id}}"
+          }
+        },
+        {
+          "name": "WS /ws/presence",
+          "request": {
+            "method": "GET",
+            "url": "ws://localhost:8000/ws/presence"
+          }
+        }
+      ]
+    }
+  ]
+}
