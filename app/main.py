@@ -47,3 +47,7 @@ app.include_router(ws_router)
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "Togo Truck Connect API"}
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "TogoTruckConnect API"}
