@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,32 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://togotruck:togotruck_secret_2026@localhost:5432/togotruckconnect"
 
     database_url_async: str = "postgresql+asyncpg://togotruck:togotruck_secret_2026@localhost:5432/togotruckconnect"
+
+    @field_validator("database_url_async", mode="before")
+    @classmethod
+    def normalize_async_url(cls, v: str) -> str:
+        """
+        Render (et d'autres hebergeurs) fournissent parfois l'URL de la base
+        au format 'postgres://' ou 'postgresql://' (sans le driver asyncpg).
+        SQLAlchemy async a besoin du scheme 'postgresql+asyncpg://'.
+        Ce validator corrige automatiquement le scheme si besoin.
+        """
+        if v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif v.startswith("postgresql://") and "+asyncpg" not in v:
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_sync_url(cls, v: str) -> str:
+        """
+        Normalise aussi l'URL sync (utilisee par ex. par Alembic) au cas ou
+        elle serait fournie avec le scheme legacy 'postgres://'.
+        """
+        if v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql://", 1)
+        return v
 
     # ==========================
     # JWT
