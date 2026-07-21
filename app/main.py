@@ -12,12 +12,11 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup : créer les tables
-    await init_db()
+    # Initialiser les ressources
     yield
-    # Shutdown : fermer les connexions
-    await close_db()
 
+    # Libérer les ressources
+    await close_db()
 
 app = FastAPI(
     title="Togo Truck Connect API",

@@ -23,4 +23,4 @@ class CamionPhoto(Base):
     )
 
     # Relationships (string-based to avoid circular imports)
-    camion: Mapped["Camion"] = relationship("Camion", back_populates="photos")
+    camion: Mapped["Camion"] = relationship("Camion", back_populates="photos") # type: ignore
