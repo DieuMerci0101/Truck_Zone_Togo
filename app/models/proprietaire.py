@@ -11,14 +11,6 @@ if TYPE_CHECKING:
     from app.models.offre import OffreRecrutement
     from app.models.user import User
 
-try:
-    from geoalchemy2 import Geometry  # type: ignore
-
-    HAS_GEO = True
-except ImportError:
-    HAS_GEO = False
-
-
 class ProfilProprietaire(TimestampMixin, Base):
     __tablename__ = "profils_proprietaire"
 
@@ -34,13 +26,7 @@ class ProfilProprietaire(TimestampMixin, Base):
         nullable=False,
     )
     adresse: Mapped[str] = mapped_column(String(500), nullable=False)
-
-    if HAS_GEO:
-        localisation = mapped_column(
-            Geometry(geometry_type="POINT", srid=4326), nullable=False
-        )
-    else:
-        localisation = mapped_column(String(100), nullable=False)
+    localisation = mapped_column(String(100), nullable=False, default="POINT(0 0)")
 
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)

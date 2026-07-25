@@ -1,6 +1,9 @@
+import math
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +27,30 @@ def _localisation_wkt(lat: float, lng: float) -> str:
     return f"POINT({lng} {lat})"
 
 
+def _parse_wkt(loc: str | None) -> tuple[float, float]:
+    if not loc:
+        return 0.0, 0.0
+    try:
+        coords = loc.replace("POINT(", "").replace(")", "").split()
+        lng, lat = float(coords[0]), float(coords[1])
+        return lat, lng
+    except (ValueError, IndexError):
+        return 0.0, 0.0
+
+
+def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2
+    return R * 2 * math.asin(math.sqrt(a))
+
+
+class MecanicienPositionUpdate(BaseModel):
+    localisation_lat: float = Field(..., ge=-90, le=90)
+    localisation_lng: float = Field(..., ge=-180, le=180)
+
+
 def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
     return AssistanceOut(
         id=a.id,
@@ -36,26 +63,6 @@ def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
         statut=a.statut.value if hasattr(a.statut, "value") else a.statut,
         created_at=a.created_at,
     )
-
-
-@router.get("/", response_model=list[ProfilMecanicienOut])
-async def list_mecaniciens(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    specialite: str | None = None,
-    disponibilite: str | None = None,
-    tarification: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    query = select(ProfilMecanicien)
-    if specialite:
-        query = query.where(ProfilMecanicien.specialites.any(specialite))
-    if disponibilite:
-        query = query.where(ProfilMecanicien.disponibilite == disponibilite)
-    if tarification:
-        query = query.where(ProfilMecanicien.tarification == tarification)
-    result = await db.execute(query.offset(skip).limit(limit))
-    return result.scalars().all()
 
 
 @router.get("/me", response_model=ProfilMecanicienOut)
@@ -133,37 +140,38 @@ async def update_my_profile(
     return profil
 
 
-@router.get("/proches", response_model=list[ProfilMecanicienOut])
-async def get_mecaniciens_proches(
-    lat: float = Query(..., ge=-90, le=90),
-    lng: float = Query(..., ge=-180, le=180),
-    rayon_km: int = Query(50, gt=0),
-    specialite: str | None = None,
+@router.put("/me/position")
+async def update_my_position(
+    data: MecanicienPositionUpdate,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(ProfilMecanicien).where(
-        ProfilMecanicien.disponibilite == "disponible"
-    )
-    if specialite:
-        query = query.where(ProfilMecanicien.specialites.any(specialite))
-    result = await db.execute(query.limit(50))
-    return result.scalars().all()
-
-
-@router.get("/{mecanicien_id}", response_model=ProfilMecanicienOut)
-async def get_mecanicien(
-    mecanicien_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-):
     result = await db.execute(
-        select(ProfilMecanicien).where(ProfilMecanicien.id == mecanicien_id)
+        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
     )
     profil = result.scalar_one_or_none()
     if not profil:
-        raise HTTPException(status_code=404, detail="Mécanicien non trouvé")
-    return profil
+        raise HTTPException(status_code=404, detail="Profil mécanicien non trouvé")
+
+    profil.localisation = _localisation_wkt(data.localisation_lat, data.localisation_lng)
+    await db.flush()
+    return {"message": "Position mise à jour", "localisation_lat": data.localisation_lat, "localisation_lng": data.localisation_lng}
 
 
 # ─── Assistance ─────────────────────────────────────
+
+@router.get("/assistance/mes-demandes", response_model=list[AssistanceOut])
+async def list_my_assistance(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(DemandeAssistance)
+        .where(DemandeAssistance.demandeur_id == current_user.id)
+        .order_by(DemandeAssistance.created_at.desc())
+    )
+    return [_assistance_out(a) for a in result.scalars().all()]
+
 
 @router.post("/assistance", response_model=AssistanceOut, status_code=201)
 async def create_assistance(
@@ -202,19 +210,6 @@ async def get_assistance(
     return _assistance_out(assistance)
 
 
-@router.get("/assistance/mes-demandes", response_model=list[AssistanceOut])
-async def list_my_assistance(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(DemandeAssistance)
-        .where(DemandeAssistance.demandeur_id == current_user.id)
-        .order_by(DemandeAssistance.created_at.desc())
-    )
-    return [_assistance_out(a) for a in result.scalars().all()]
-
-
 @router.put("/assistance/{assistance_id}/statut")
 async def update_assistance_statut(
     assistance_id: uuid.UUID,
@@ -231,3 +226,69 @@ async def update_assistance_statut(
     assistance.statut = data.statut
     await db.flush()
     return {"message": "Statut mis à jour", "statut": assistance.statut}
+
+
+# ─── Nearby & single mecanicien ────────────────────
+# IMPORTANT: these parametrized routes MUST be last to avoid catching
+# /assistance/* or /me paths.
+
+@router.get("/proches", response_model=list[ProfilMecanicienOut])
+async def get_mecaniciens_proches(
+    lat: float = Query(..., ge=-90, le=90),
+    lng: float = Query(..., ge=-180, le=180),
+    rayon_km: int = Query(50, gt=0),
+    specialite: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(ProfilMecanicien).where(
+        ProfilMecanicien.disponibilite == "disponible"
+    )
+    if specialite:
+        query = query.where(ProfilMecanicien.specialites.any(specialite))
+    result = await db.execute(query.limit(200))
+    all_profiles = result.scalars().all()
+
+    nearby = []
+    for p in all_profiles:
+        p_lat, p_lng = _parse_wkt(p.localisation)
+        if p_lat == 0.0 and p_lng == 0.0:
+            continue
+        dist = _haversine(lat, lng, p_lat, p_lng)
+        if dist <= rayon_km:
+            nearby.append((dist, p))
+
+    nearby.sort(key=lambda x: x[0])
+    return [p for _, p in nearby[:50]]
+
+
+@router.get("/", response_model=list[ProfilMecanicienOut])
+async def list_mecaniciens(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    specialite: str | None = None,
+    disponibilite: str | None = None,
+    tarification: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(ProfilMecanicien)
+    if specialite:
+        query = query.where(ProfilMecanicien.specialites.any(specialite))
+    if disponibilite:
+        query = query.where(ProfilMecanicien.disponibilite == disponibilite)
+    if tarification:
+        query = query.where(ProfilMecanicien.tarification == tarification)
+    result = await db.execute(query.offset(skip).limit(limit))
+    return result.scalars().all()
+
+
+@router.get("/{mecanicien_id}", response_model=ProfilMecanicienOut)
+async def get_mecanicien(
+    mecanicien_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(ProfilMecanicien).where(ProfilMecanicien.id == mecanicien_id)
+    )
+    profil = result.scalar_one_or_none()
+    if not profil:
+        raise HTTPException(status_code=404, detail="Mécanicien non trouvé")
+    return profil

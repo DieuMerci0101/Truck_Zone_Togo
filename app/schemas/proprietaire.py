@@ -72,6 +72,16 @@ class ProfilProprietaireOut(BaseModel):
 
 # ─── Camion ────────────────────────────────────────
 
+class CamionPhotoOut(BaseModel):
+    id: uuid.UUID
+    camion_id: uuid.UUID
+    photo_url: str
+    est_principale: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class CamionCreate(BaseModel):
     immatriculation: str = Field(..., max_length=50)
     marque: str = Field(..., max_length=100)
@@ -81,6 +91,7 @@ class CamionCreate(BaseModel):
     capacite_charge: float = Field(..., gt=0)
     etat: str = Field(..., pattern=r"^(excellent|bon|use|en_reparation)$")
     description: Optional[str] = None
+    is_public: bool = False
 
 
 class CamionUpdate(BaseModel):
@@ -92,11 +103,13 @@ class CamionUpdate(BaseModel):
     capacite_charge: Optional[float] = Field(None, gt=0)
     etat: Optional[str] = None
     description: Optional[str] = None
+    is_public: Optional[bool] = None
 
 
 class CamionOut(BaseModel):
     id: uuid.UUID
-    proprietaire_id: uuid.UUID
+    proprietaire_id: Optional[uuid.UUID] = None
+    chauffeur_id: Optional[uuid.UUID] = None
     immatriculation: str
     marque: str
     modele: str
@@ -106,16 +119,8 @@ class CamionOut(BaseModel):
     etat: str
     description: Optional[str] = None
     photo_principale_url: Optional[str] = None
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
-class CamionPhotoOut(BaseModel):
-    id: uuid.UUID
-    camion_id: uuid.UUID
-    photo_url: str
-    est_principale: bool
+    is_public: bool = False
+    photos: list[CamionPhotoOut] = []
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -155,5 +160,6 @@ class OffreOut(BaseModel):
     camion_id: Optional[uuid.UUID] = None
     statut: str
     created_at: datetime
+    is_editable: bool = False
 
     model_config = {"from_attributes": True}

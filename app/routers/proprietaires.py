@@ -1,8 +1,11 @@
+import os
 import uuid
+from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.user import User
@@ -10,10 +13,13 @@ from app.models.proprietaire import ProfilProprietaire
 from app.models.camion import Camion
 from app.models.camion_photo import CamionPhoto
 from app.models.offre import OffreRecrutement
+from app.models.assistance import DemandeAssistance
+from app.models.conversation import Conversation, ConversationParticipant
 from app.routers.auth import get_current_user
 from app.schemas.proprietaire import (
     CamionCreate,
     CamionOut,
+    CamionPhotoOut,
     CamionUpdate,
     OffreCreate,
     OffreOut,
@@ -21,12 +27,28 @@ from app.schemas.proprietaire import (
     ProfilProprietaireOut,
     ProfilProprietaireUpdate,
 )
+from app.schemas.mecanicien import AssistanceCreate, AssistanceOut
 
 router = APIRouter(prefix="/api/proprietaires", tags=["Propriétaires"])
+
+EDIT_WINDOW_MINUTES = 5
+
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "camions")
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_PHOTOS_PER_CAMION = 10
 
 
 def _localisation_wkt(lat: float, lng: float) -> str:
     return f"POINT({lng} {lat})"
+
+
+def _is_editable(created_at) -> bool:
+    if not created_at:
+        return False
+    now = datetime.now(timezone.utc)
+    created = created_at.replace(tzinfo=timezone.utc) if created_at.tzinfo is None else created_at
+    return (now - created) <= timedelta(minutes=EDIT_WINDOW_MINUTES)
 
 
 # ─── Profil ─────────────────────────────────────────
@@ -172,10 +194,18 @@ async def create_camion(
         capacite_charge=data.capacite_charge,
         etat=data.etat,
         description=data.description,
+        is_public=data.is_public,
     )
     db.add(camion)
     await db.flush()
     await db.refresh(camion)
+
+    result = await db.execute(
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(Camion.id == camion.id)
+    )
+    camion = result.scalar_one()
     return camion
 
 
@@ -187,7 +217,9 @@ async def get_camion(
 ):
     profil = await _get_my_profil(current_user, db)
     result = await db.execute(
-        select(Camion).where(
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(
             Camion.id == camion_id,
             Camion.proprietaire_id == profil.id,
         )
@@ -207,7 +239,9 @@ async def update_camion(
 ):
     profil = await _get_my_profil(current_user, db)
     result = await db.execute(
-        select(Camion).where(
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(
             Camion.id == camion_id,
             Camion.proprietaire_id == profil.id,
         )
@@ -221,6 +255,13 @@ async def update_camion(
         setattr(camion, field, value)
     await db.flush()
     await db.refresh(camion)
+
+    result = await db.execute(
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(Camion.id == camion.id)
+    )
+    camion = result.scalar_one()
     return camion
 
 
@@ -248,6 +289,7 @@ async def delete_camion(
 @router.post("/me/camions/{camion_id}/photos")
 async def upload_camion_photo(
     camion_id: uuid.UUID,
+    file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -262,15 +304,41 @@ async def upload_camion_photo(
     if not camion:
         raise HTTPException(status_code=404, detail="Camion non trouvé")
 
+    existing = await db.execute(
+        select(CamionPhoto).where(CamionPhoto.camion_id == camion.id)
+    )
+    count = len(existing.scalars().all())
+    if count >= MAX_PHOTOS_PER_CAMION:
+        raise HTTPException(status_code=400, detail=f"Maximum {MAX_PHOTOS_PER_CAMION} photos par camion")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Format non supporté (JPG, PNG, WebP uniquement)")
+
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 5 Mo")
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    is_first = count == 0
     photo = CamionPhoto(
         id=uuid.uuid4(),
         camion_id=camion.id,
-        photo_url="/uploads/placeholder.jpg",
-        est_principale=False,
+        photo_url=f"/uploads/camions/{filename}",
+        est_principale=is_first,
     )
     db.add(photo)
+
+    if is_first:
+        camion.photo_principale_url = photo.photo_url
+
     await db.flush()
-    return {"id": str(photo.id), "message": "Photo uploadée", "url": photo.photo_url}
+    return {"id": str(photo.id), "message": "Photo uploadée", "url": photo.photo_url, "est_principale": is_first}
 
 
 @router.delete("/me/camions/{camion_id}/photos/{photo_id}")
@@ -290,9 +358,94 @@ async def delete_camion_photo(
     photo = result.scalar_one_or_none()
     if not photo:
         raise HTTPException(status_code=404, detail="Photo non trouvée")
+
+    if photo.photo_url and photo.photo_url.startswith("/uploads/"):
+        file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), photo.photo_url.lstrip("/"))
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+    was_main = photo.est_principale
     await db.delete(photo)
     await db.flush()
+
+    if was_main:
+        camion_result = await db.execute(
+            select(Camion).where(Camion.id == camion_id)
+        )
+        camion = camion_result.scalar_one_or_none()
+        if camion:
+            next_photo = await db.execute(
+                select(CamionPhoto)
+                .where(CamionPhoto.camion_id == camion_id)
+                .order_by(CamionPhoto.created_at)
+                .limit(1)
+            )
+            next_p = next_photo.scalar_one_or_none()
+            if next_p:
+                next_p.est_principale = True
+                camion.photo_principale_url = next_p.photo_url
+            else:
+                camion.photo_principale_url = None
+            await db.flush()
+
     return {"message": "Photo supprimée"}
+
+
+@router.post("/me/camions/{camion_id}/photos/{photo_id}/principale")
+async def set_main_photo(
+    camion_id: uuid.UUID,
+    photo_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profil = await _get_my_profil(current_user, db)
+    result = await db.execute(
+        select(CamionPhoto).where(
+            CamionPhoto.id == photo_id,
+            CamionPhoto.camion_id == camion_id,
+        )
+    )
+    photo = result.scalar_one_or_none()
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo non trouvée")
+
+    all_photos = await db.execute(
+        select(CamionPhoto).where(CamionPhoto.camion_id == camion_id)
+    )
+    for p in all_photos.scalars():
+        p.est_principale = False
+
+    photo.est_principale = True
+
+    camion_result = await db.execute(
+        select(Camion).where(Camion.id == camion_id)
+    )
+    camion = camion_result.scalar_one_or_none()
+    if camion:
+        camion.photo_principale_url = photo.photo_url
+    await db.flush()
+    return {"message": "Photo principale mise à jour"}
+
+
+@router.post("/me/camions/{camion_id}/publish")
+async def toggle_publish_camion(
+    camion_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    profil = await _get_my_profil(current_user, db)
+    result = await db.execute(
+        select(Camion).where(
+            Camion.id == camion_id,
+            Camion.proprietaire_id == profil.id,
+        )
+    )
+    camion = result.scalar_one_or_none()
+    if not camion:
+        raise HTTPException(status_code=404, detail="Camion non trouvé")
+    camion.is_public = not camion.is_public
+    await db.flush()
+    return {"message": f"Camion {'publié' if camion.is_public else 'dépublié'}", "is_public": camion.is_public}
 
 
 # ─── Offres ─────────────────────────────────────────
@@ -321,6 +474,7 @@ async def list_my_offres(
             camion_id=uuid.UUID(o.camion_id) if o.camion_id and isinstance(o.camion_id, str) else o.camion_id,
             statut=o.statut.value if hasattr(o.statut, 'value') else o.statut,
             created_at=o.created_at,
+            is_editable=_is_editable(o.created_at),
         ))
     return out
 
@@ -411,6 +565,15 @@ async def update_offre(
     if not offre:
         raise HTTPException(status_code=404, detail="Offre non trouvée")
 
+    if offre.created_at:
+        now = datetime.now(timezone.utc)
+        created = offre.created_at.replace(tzinfo=timezone.utc) if offre.created_at.tzinfo is None else offre.created_at
+        if now - created > timedelta(minutes=EDIT_WINDOW_MINUTES):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Le délai de modification de {EDIT_WINDOW_MINUTES} minutes est dépassé",
+            )
+
     update_data = data.model_dump(exclude_unset=True)
     if "date_debut" in update_data:
         from datetime import date as date_type
@@ -453,3 +616,96 @@ async def delete_offre(
     await db.delete(offre)
     await db.flush()
     return {"message": "Offre supprimée"}
+
+
+# ─── Camions publics ────────────────────────────────
+
+@router.get("/camions/public", response_model=list[CamionOut])
+async def list_public_camions(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    type_camion: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Camion).options(
+        selectinload(Camion.photos),
+        selectinload(Camion.proprietaire).selectinload(ProfilProprietaire.user),
+    ).where(Camion.is_public == True)
+    if type_camion:
+        query = query.where(Camion.type_camion == type_camion)
+    query = query.order_by(Camion.created_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(query)
+    camions = result.scalars().unique().all()
+    return camions
+
+
+@router.get("/camions/public/{camion_id}", response_model=CamionOut)
+async def get_public_camion(
+    camion_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Camion).options(
+            selectinload(Camion.photos),
+            selectinload(Camion.proprietaire).selectinload(ProfilProprietaire.user),
+        ).where(Camion.id == camion_id, Camion.is_public == True)
+    )
+    camion = result.scalar_one_or_none()
+    if not camion:
+        raise HTTPException(status_code=404, detail="Camion non trouvé ou non public")
+    return camion
+
+
+# ─── Assistance mécanique (propriétaire) ──────────────
+
+def _localisation_wkt(lat: float, lng: float) -> str:
+    return f"POINT({lng} {lat})"
+
+
+def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
+    return AssistanceOut(
+        id=a.id,
+        demandeur_id=a.demandeur_id,
+        mecanicien_id=a.mecanicien_id,
+        type_panne=a.type_panne.value if hasattr(a.type_panne, "value") else a.type_panne,
+        description=a.description,
+        urgence=a.urgence.value if hasattr(a.urgence, "value") else a.urgence,
+        vehicule_description=a.vehicule_description,
+        statut=a.statut.value if hasattr(a.statut, "value") else a.statut,
+        created_at=a.created_at,
+    )
+
+
+@router.post("/me/assistance", response_model=AssistanceOut, status_code=201)
+async def create_assistance(
+    data: AssistanceCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    wkt = _localisation_wkt(data.localisation_lat, data.localisation_lng)
+    assistance = DemandeAssistance(
+        id=uuid.uuid4(),
+        demandeur_id=current_user.id,
+        type_panne=data.type_panne,
+        description=data.description,
+        urgence=data.urgence,
+        localisation=wkt,
+        vehicule_description=data.vehicule_description,
+    )
+    db.add(assistance)
+    await db.flush()
+    await db.refresh(assistance)
+    return _assistance_out(assistance)
+
+
+@router.get("/me/assistance", response_model=list[AssistanceOut])
+async def list_my_assistance(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(DemandeAssistance)
+        .where(DemandeAssistance.demandeur_id == current_user.id)
+        .order_by(DemandeAssistance.created_at.desc())
+    )
+    return [_assistance_out(a) for a in result.scalars().all()]

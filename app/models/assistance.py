@@ -11,14 +11,6 @@ if TYPE_CHECKING:
     from app.models.mecanicien import ProfilMecanicien
     from app.models.user import User
 
-try:
-    from geoalchemy2 import Geometry  # type: ignore
-
-    HAS_GEO = True
-except ImportError:
-    HAS_GEO = False
-
-
 class DemandeAssistance(Base):
     __tablename__ = "demandes_assistance"
 
@@ -42,13 +34,7 @@ class DemandeAssistance(Base):
         Enum(Urgence, name="urgence", create_constraint=True),
         nullable=False,
     )
-
-    if HAS_GEO:
-        localisation = mapped_column(
-            Geometry(geometry_type="POINT", srid=4326), nullable=False
-        )
-    else:
-        localisation = mapped_column(String(100), nullable=False)
+    localisation = mapped_column(String(100), nullable=False, default="POINT(0 0)")
 
     vehicule_description: Mapped[str] = mapped_column(String(255), nullable=False)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)

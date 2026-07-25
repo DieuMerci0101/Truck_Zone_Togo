@@ -10,10 +10,15 @@ from app.models.enums import EtatCamion, TypeCamion
 class Camion(TimestampMixin, Base):
     __tablename__ = "camions"
 
-    proprietaire_id: Mapped[str] = mapped_column(
+    proprietaire_id: Mapped[str | None] = mapped_column(
         ForeignKey("profils_proprietaire.id", ondelete="CASCADE"),
         index=True,
-        nullable=False,
+        nullable=True,
+    )
+    chauffeur_id: Mapped[str | None] = mapped_column(
+        ForeignKey("profils_chauffeur.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
     )
     immatriculation: Mapped[str] = mapped_column(
         String(50), unique=True, index=True, nullable=False
@@ -34,10 +39,14 @@ class Camion(TimestampMixin, Base):
     photo_principale_url: Mapped[str | None] = mapped_column(
         String(500), nullable=True
     )
+    is_public: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     # Relationships (string-based to avoid circular imports)
-    proprietaire: Mapped["ProfilProprietaire"] = relationship(
+    proprietaire: Mapped["ProfilProprietaire | None"] = relationship(
         "ProfilProprietaire", back_populates="camions"
+    )
+    chauffeur: Mapped["ProfilChauffeur | None"] = relationship(
+        "ProfilChauffeur", back_populates="camions"
     )
     photos: Mapped[list["CamionPhoto"]] = relationship(
         "CamionPhoto", back_populates="camion", cascade="all, delete-orphan"

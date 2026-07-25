@@ -36,7 +36,9 @@ from app.models.message import Message
 from app.models.incident import Incident, IncidentCommentaire
 from app.models.otp import OTPReset
 from app.models.assistance import DemandeAssistance
+from app.models.candidature import Candidature
 from app.models.notification import Notification
+from app.models.photo_profil import PhotoProfil
 
 __all__ = [
     "Base",
@@ -56,7 +58,9 @@ __all__ = [
     "IncidentCommentaire",
     "OTPReset",
     "DemandeAssistance",
+    "Candidature",
     "Notification",
+    "PhotoProfil",
     # Enums
     "UserRole",
     "CategoriePermis",

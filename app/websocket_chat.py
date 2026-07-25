@@ -193,3 +193,84 @@ async def websocket_presence(websocket: WebSocket):
                 await websocket.send_json(json.loads(message["data"]))
     except WebSocketDisconnect:
         await pubsub.unsubscribe("presence")
+
+
+# ─── Alertes en temps réel ─────────────────────────
+class AlertManager:
+    """Gère les connexions d'alerte par utilisateur."""
+
+    def __init__(self):
+        self.active_alerts: dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, user_id: str):
+        await websocket.accept()
+        self.active_alerts[user_id] = websocket
+
+    async def disconnect(self, user_id: str):
+        self.active_alerts.pop(user_id, None)
+
+    async def send_alert(self, user_id: str, alert_data: dict):
+        ws = self.active_alerts.get(user_id)
+        if ws:
+            try:
+                await ws.send_json(alert_data)
+            except Exception:
+                pass
+
+    async def broadcast_alert(self, alert_data: dict, exclude_user: str = None):
+        for uid, ws in self.active_alerts.items():
+            if uid != exclude_user:
+                try:
+                    await ws.send_json(alert_data)
+                except Exception:
+                    pass
+
+
+alert_manager = AlertManager()
+
+
+@router.websocket("/ws/alerts/{user_id}")
+async def websocket_alerts(websocket: WebSocket, user_id: str):
+    """
+    WebSocket pour les alertes en temps réel.
+    Quand un utilisateur reçoit une alerte (nouveau message, incident, etc.),
+    il reçoit la notification et se déconnecte automatiquement.
+    """
+    await alert_manager.connect(websocket, user_id)
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            alert_type = data.get("type", "info")
+
+            if alert_type == "alert":
+                # Broadcast l'alerte aux autres utilisateurs connectés
+                await alert_manager.broadcast_alert(
+                    {
+                        "type": "alert",
+                        "title": data.get("title", "Alerte"),
+                        "message": data.get("message", ""),
+                        "alert_level": data.get("alert_level", "info"),
+                        "should_disconnect": data.get("should_disconnect", False),
+                    },
+                    exclude_user=user_id,
+                )
+            elif alert_type == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        await alert_manager.disconnect(user_id)
+
+
+async def send_alert_to_user(user_id: str, title: str, message: str, alert_level: str = "warning", should_disconnect: bool = False):
+    """Helper function to send an alert to a specific user."""
+    await alert_manager.send_alert(
+        user_id,
+        {
+            "type": "alert",
+            "title": title,
+            "message": message,
+            "alert_level": alert_level,
+            "should_disconnect": should_disconnect,
+        },
+    )

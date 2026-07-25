@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Enum, String  # type: ignore
+from sqlalchemy import Boolean, Date, Enum, String, Text  # type: ignore
 from sqlalchemy.orm import Mapped, mapped_column, relationship  # type: ignore
 
 from app.models.base import Base, TimestampMixin
@@ -15,7 +15,9 @@ if TYPE_CHECKING:
     from app.models.mecanicien import ProfilMecanicien
     from app.models.message import Message
     from app.models.notification import Notification
+    from app.models.candidature import Candidature
     from app.models.otp import OTPReset
+    from app.models.photo_profil import PhotoProfil
     from app.models.proprietaire import ProfilProprietaire
 
 
@@ -32,6 +34,11 @@ class User(TimestampMixin, Base):
         Enum(UserRole, name="user_role", create_constraint=True),
         nullable=False,
     )
+    photo_profil: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    date_naissance: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
+    lieu_naissance: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    adresse: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -68,4 +75,10 @@ class User(TimestampMixin, Base):
     )
     notifications: Mapped[list["Notification"]] = relationship(
         "Notification", back_populates="destinataire"
+    )
+    candidatures: Mapped[list["Candidature"]] = relationship(
+        "Candidature", back_populates="chauffeur"
+    )
+    photos_profil: Mapped[list["PhotoProfil"]] = relationship(
+        "PhotoProfil", back_populates="user"
     )

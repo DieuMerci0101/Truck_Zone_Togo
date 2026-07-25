@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.models.otp import OTPReset
+from app.utils.email import send_otp_email
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -24,7 +25,7 @@ router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
 # ─── Helpers ────────────────────────────────────────
 
-def create_token(user_id: str, token_type: str = "access") -> str:
+def create_token(user_id: str, token_type: str = "access", role: str | None = None) -> str:
     if token_type == "access":
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     else:
@@ -34,6 +35,8 @@ def create_token(user_id: str, token_type: str = "access") -> str:
         "type": token_type,
         "exp": expire,
     }
+    if role:
+        payload["role"] = role
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -141,6 +144,11 @@ class UserOut(BaseModel):
     nom_complet: str
     telephone: str
     role: str
+    photo_profil: str | None = None
+    date_naissance: str | None = None
+    lieu_naissance: str | None = None
+    adresse: str | None = None
+    bio: str | None = None
     is_verified: bool
     is_active: bool
     created_at: datetime
@@ -151,6 +159,10 @@ class UserOut(BaseModel):
 class UserUpdate(BaseModel):
     nom_complet: str | None = None
     telephone: str | None = None
+    date_naissance: str | None = None
+    lieu_naissance: str | None = None
+    adresse: str | None = None
+    bio: str | None = None
 
 
 # ─── Endpoints ──────────────────────────────────────
@@ -189,8 +201,8 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
 
-    access_token = create_token(str(user.id), "access")
-    refresh_token = create_token(str(user.id), "refresh")
+    access_token = create_token(str(user.id), "access", role=user.role.value)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value)
 
     return TokenResponse(
         access_token=access_token,
@@ -199,7 +211,16 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "id": str(user.id),
             "email": user.email,
             "nom_complet": user.nom_complet,
-            "role": user.role,
+            "telephone": user.telephone,
+            "role": user.role.value,
+            "photo_profil": user.photo_profil,
+            "date_naissance": user.date_naissance,
+            "lieu_naissance": user.lieu_naissance,
+            "adresse": user.adresse,
+            "bio": user.bio,
+            "is_verified": user.is_verified,
+            "is_active": user.is_active,
+            "created_at": str(user.created_at),
         },
     )
 
@@ -223,8 +244,8 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             detail="Ce compte n'est pas un administrateur",
         )
 
-    access_token = create_token(str(user.id), "access")
-    refresh_token = create_token(str(user.id), "refresh")
+    access_token = create_token(str(user.id), "access", role=user.role.value)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value)
 
     return TokenResponse(
         access_token=access_token,
@@ -233,7 +254,16 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "id": str(user.id),
             "email": user.email,
             "nom_complet": user.nom_complet,
-            "role": user.role,
+            "telephone": user.telephone,
+            "role": user.role.value,
+            "photo_profil": user.photo_profil,
+            "date_naissance": user.date_naissance,
+            "lieu_naissance": user.lieu_naissance,
+            "adresse": user.adresse,
+            "bio": user.bio,
+            "is_verified": user.is_verified,
+            "is_active": user.is_active,
+            "created_at": str(user.created_at),
         },
     )
 
@@ -249,11 +279,20 @@ async def update_me(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if data.nom_complet:
+    if data.nom_complet is not None:
         current_user.nom_complet = data.nom_complet
-    if data.telephone:
+    if data.telephone is not None:
         current_user.telephone = data.telephone
-    await db.flush()
+    if data.date_naissance is not None:
+        current_user.date_naissance = data.date_naissance
+    if data.lieu_naissance is not None:
+        current_user.lieu_naissance = data.lieu_naissance
+    if data.adresse is not None:
+        current_user.adresse = data.adresse
+    if data.bio is not None:
+        current_user.bio = data.bio
+    db.add(current_user)
+    await db.commit()
     await db.refresh(current_user)
     return current_user
 
@@ -276,29 +315,35 @@ async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_d
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
 
-    if user:
-        # Invalider les anciens OTP
-        old_otps = await db.execute(
-            select(OTPReset).where(OTPReset.user_id == user.id, OTPReset.used == False)
-        )
-        for otp in old_otps.scalars():
-            otp.used = True
+    if not user:
+        raise HTTPException(status_code=400, detail="Email incorrect")
 
-        # Générer un code OTP à 6 chiffres
-        otp_code = str(uuid.uuid4().int)[:6]
-        otp = OTPReset(
-            id=uuid.uuid4(),
-            user_id=user.id,
-            code_hash=bcrypt.hash(otp_code),
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
-            used=False,
-            attempts=0,
-        )
-        db.add(otp)
-        await db.flush()
+    # Invalider les anciens OTP
+    old_otps = await db.execute(
+        select(OTPReset).where(OTPReset.user_id == user.id, OTPReset.used == False)
+    )
+    for otp in old_otps.scalars():
+        otp.used = True
 
-    # Toujours renvoyer le même message (sécurité)
-    return {"message": "Si cet email existe, un code OTP a été envoyé"}
+    # Générer un code OTP à 6 chiffres (uniquement des chiffres)
+    otp_code = f"{uuid.uuid4().int % 1000000:06d}"
+    otp = OTPReset(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        code_hash=bcrypt.hash(otp_code),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        used=False,
+        attempts=0,
+    )
+    db.add(otp)
+    await db.flush()
+
+    # Envoyer l'email avec le code OTP via SMTP
+    email_sent = send_otp_email(user.email, otp_code, user.nom_complet)
+    if not email_sent:
+        raise HTTPException(status_code=500, detail="Erreur lors de l'envoi de l'email. Réessayez.")
+
+    return {"message": f"Un code OTP a été envoyé à {data.email}"}
 
 
 @router.post("/verify-otp")
@@ -373,8 +418,8 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Utilisateur non trouvé ou désactivé")
 
-    access_token = create_token(str(user.id), "access")
-    refresh_token = create_token(str(user.id), "refresh")
+    access_token = create_token(str(user.id), "access", role=user.role.value)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value)
 
     return TokenResponse(
         access_token=access_token,
@@ -383,7 +428,7 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
             "id": str(user.id),
             "email": user.email,
             "nom_complet": user.nom_complet,
-            "role": user.role,
+            "role": user.role.value,
         },
     )
 

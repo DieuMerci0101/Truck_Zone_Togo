@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 
 from app.config import get_settings
 from app.database import init_db, close_db, async_session
-from app.routers import auth, chauffeurs, proprietaires, mecaniciens, conversations, incidents, admin, notifications
+from fastapi.staticfiles import StaticFiles
+from app.routers import auth, chauffeurs, proprietaires, mecaniciens, conversations, incidents, admin, notifications, offres, users
 from app.websocket_chat import router as ws_router
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,11 @@ app.include_router(conversations.router)
 app.include_router(incidents.router)
 app.include_router(admin.router)
 app.include_router(notifications.router)
+app.include_router(offres.router)
+app.include_router(users.router)
 app.include_router(ws_router)
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.get("/health")

@@ -10,14 +10,6 @@ from app.models.enums import GraviteIncident, StatutIncident, TypeIncident
 if TYPE_CHECKING:
     from app.models.user import User
 
-try:
-    from geoalchemy2 import Geometry  # type: ignore
-
-    HAS_GEO = True
-except ImportError:
-    HAS_GEO = False
-
-
 class Incident(Base):
     __tablename__ = "incidents"
 
@@ -32,13 +24,7 @@ class Incident(Base):
         nullable=False,
     )
     date_incident = mapped_column(DateTime(timezone=True), nullable=False)
-
-    if HAS_GEO:
-        localisation = mapped_column(
-            Geometry(geometry_type="POINT", srid=4326), nullable=False
-        )
-    else:
-        localisation = mapped_column(String(100), nullable=False)
+    localisation = mapped_column(String(100), nullable=False, default="POINT(0 0)")
 
     description: Mapped[str] = mapped_column(Text, nullable=False)
     gravite: Mapped[GraviteIncident] = mapped_column(

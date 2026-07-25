@@ -50,3 +50,4 @@ class ProfilChauffeur(TimestampMixin, Base):
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="profil_chauffeur")
+    camions: Mapped[list["Camion"]] = relationship("Camion", back_populates="chauffeur")

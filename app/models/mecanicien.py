@@ -11,14 +11,6 @@ if TYPE_CHECKING:
     from app.models.assistance import DemandeAssistance
     from app.models.user import User
 
-try:
-    from geoalchemy2 import Geometry  # type: ignore
-
-    HAS_GEO = True
-except ImportError:
-    HAS_GEO = False
-
-
 class ProfilMecanicien(TimestampMixin, Base):
     __tablename__ = "profils_mecanicien"
 
@@ -50,13 +42,7 @@ class ProfilMecanicien(TimestampMixin, Base):
         nullable=False,
         default=DisponibiliteMecanicien.disponible,
     )
-
-    if HAS_GEO:
-        localisation = mapped_column(
-            Geometry(geometry_type="POINT", srid=4326), nullable=False
-        )
-    else:
-        localisation = mapped_column(String(100), nullable=False)
+    localisation = mapped_column(String(100), nullable=False, default="POINT(0 0)")
 
     rayon_intervention: Mapped[int] = mapped_column(Integer, nullable=False)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)

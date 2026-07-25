@@ -46,3 +46,6 @@ class OffreRecrutement(TimestampMixin, Base):
     camion: Mapped[Optional["Camion"]] = relationship(
         "Camion", back_populates="offres"
     )
+    candidatures: Mapped[list["Candidature"]] = relationship(
+        "Candidature", back_populates="offre"
+    )
