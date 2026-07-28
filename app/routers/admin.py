@@ -206,13 +206,41 @@ async def update_document_statut(
     """
     Met à jour le statut d'un document (validé, rejeté, en_attente).
     Protégé : uniquement les administrateurs.
+    Envoie une notification à l'utilisateur concerné.
     """
     from app.models.document import Document
+    from app.utils.notifications import notify_user
+
     result = await db.execute(select(Document).where(Document.id == document_id))
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document non trouvé")
     doc.statut = statut
+    doc.validated_at = datetime.now(timezone.utc)
+
+    if statut == "valide":
+        await notify_user(
+            db,
+            user_id=doc.utilisateur_id,
+            titre="Document validé",
+            contenu=f"Votre document de type « {doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document} » a été validé par un administrateur.",
+            type_notif="document",
+            lien="/dashboard/chauffeur/documents",
+        )
+        user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))
+        user = user_result.scalar_one_or_none()
+        if user:
+            user.is_verified = True
+    elif statut == "rejete":
+        await notify_user(
+            db,
+            user_id=doc.utilisateur_id,
+            titre="Document rejeté",
+            contenu=f"Votre document de type « {doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document} » a été rejeté. Veuillez recharger un document valide.",
+            type_notif="document",
+            lien="/dashboard/chauffeur/documents",
+        )
+
     await db.flush()
     return {"message": f"Statut du document mis à jour : {statut}"}
 

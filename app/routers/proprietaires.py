@@ -32,6 +32,7 @@ from app.schemas.mecanicien import AssistanceCreate, AssistanceOut
 router = APIRouter(prefix="/api/proprietaires", tags=["Propriétaires"])
 
 EDIT_WINDOW_MINUTES = 5
+OFFRE_EXPIRATION_DAYS = 30
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "camions")
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -171,7 +172,9 @@ async def list_my_camions(
 ):
     profil = await _get_my_profil(current_user, db)
     result = await db.execute(
-        select(Camion).where(Camion.proprietaire_id == profil.id)
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(Camion.proprietaire_id == profil.id)
     )
     return result.scalars().all()
 
@@ -487,6 +490,7 @@ async def create_offre(
 ):
     profil = await _get_my_profil(current_user, db)
     from datetime import date as date_type
+    now_utc = datetime.now(timezone.utc)
     offre = OffreRecrutement(
         id=uuid.uuid4(),
         proprietaire_id=profil.id,
@@ -497,6 +501,7 @@ async def create_offre(
         zone_travail=data.zone_travail,
         date_debut=date_type.fromisoformat(data.date_debut),
         camion_id=str(data.camion_id) if data.camion_id else None,
+        expires_at=now_utc + timedelta(days=OFFRE_EXPIRATION_DAYS),
     )
     db.add(offre)
     await db.flush()
@@ -695,6 +700,34 @@ async def create_assistance(
     db.add(assistance)
     await db.flush()
     await db.refresh(assistance)
+
+    from app.utils.notifications import notify_all_admins, notify_user
+    from app.models.mecanicien import ProfilMecanicien
+    from app.models.enums import UserRole
+
+    mecaniciens_result = await db.execute(
+        select(User).where(User.role == UserRole.mecanicien, User.is_active == True)
+    )
+    mecaniciens = mecaniciens_result.scalars().all()
+    for mec in mecaniciens:
+        await notify_user(
+            db,
+            user_id=mec.id,
+            titre="Nouvelle demande d'assistance",
+            contenu=f"Une demande de type « {data.type_panne} » de urgence « {data.urgence } » a été créée par {current_user.nom_complet}.",
+            type_notif="assistance",
+            lien="/dashboard/mecanicien/assistance",
+        )
+
+    await notify_user(
+        db,
+        user_id=current_user.id,
+        titre="Demande d'assistance envoyée",
+        contenu=f"Votre demande d'assistance de type « {data.type_panne } » a été envoyée aux mécaniciens disponibles.",
+        type_notif="assistance",
+        lien="/dashboard/proprietaire/assistance",
+    )
+
     return _assistance_out(assistance)
 
 

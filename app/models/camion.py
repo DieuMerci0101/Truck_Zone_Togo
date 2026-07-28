@@ -40,6 +40,11 @@ class Camion(TimestampMixin, Base):
         String(500), nullable=True
     )
     is_public: Mapped[bool] = mapped_column(default=False, nullable=False)
+    nb_essieux: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    carburant: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    boite_vitesse: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    kilometrage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    localisation: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Relationships (string-based to avoid circular imports)
     proprietaire: Mapped["ProfilProprietaire | None"] = relationship(

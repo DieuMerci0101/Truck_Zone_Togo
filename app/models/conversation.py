@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+import uuid
 from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func  # type: ignore
 from sqlalchemy.dialects.postgresql import UUID  # type: ignore
 from sqlalchemy.orm import Mapped, mapped_column, relationship  # type: ignore
@@ -15,8 +16,8 @@ if TYPE_CHECKING:
 class Conversation(Base):
     __tablename__ = "conversations"
 
-    id: Mapped[str] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, index=True
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4
     )
     type: Mapped[TypeConversation] = mapped_column(
         Enum(TypeConversation, name="type_conversation", create_constraint=True),

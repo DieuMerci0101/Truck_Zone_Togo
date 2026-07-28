@@ -92,6 +92,11 @@ class CamionCreate(BaseModel):
     etat: str = Field(..., pattern=r"^(excellent|bon|use|en_reparation)$")
     description: Optional[str] = None
     is_public: bool = False
+    nb_essieux: Optional[int] = Field(None, ge=2, le=12)
+    carburant: Optional[str] = Field(None, pattern=r"^(diesel|essence|gaz|electrique|hybride)$")
+    boite_vitesse: Optional[str] = Field(None, pattern=r"^(manuelle|automatique)$")
+    kilometrage: Optional[float] = Field(None, ge=0)
+    localisation: Optional[str] = Field(None, max_length=255)
 
 
 class CamionUpdate(BaseModel):
@@ -104,6 +109,11 @@ class CamionUpdate(BaseModel):
     etat: Optional[str] = None
     description: Optional[str] = None
     is_public: Optional[bool] = None
+    nb_essieux: Optional[int] = Field(None, ge=2, le=12)
+    carburant: Optional[str] = Field(None, pattern=r"^(diesel|essence|gaz|electrique|hybride)$")
+    boite_vitesse: Optional[str] = Field(None, pattern=r"^(manuelle|automatique)$")
+    kilometrage: Optional[float] = Field(None, ge=0)
+    localisation: Optional[str] = Field(None, max_length=255)
 
 
 class CamionOut(BaseModel):
@@ -120,6 +130,11 @@ class CamionOut(BaseModel):
     description: Optional[str] = None
     photo_principale_url: Optional[str] = None
     is_public: bool = False
+    nb_essieux: Optional[int] = None
+    carburant: Optional[str] = None
+    boite_vitesse: Optional[str] = None
+    kilometrage: Optional[float] = None
+    localisation: Optional[str] = None
     photos: list[CamionPhotoOut] = []
     created_at: datetime
 

@@ -129,8 +129,10 @@ async def create_conversation(
     await db.flush()
 
     p1 = ConversationParticipant(conversation_id=conv.id, user_id=current_user.id)
+    db.add(p1)
+    await db.flush()
     p2 = ConversationParticipant(conversation_id=conv.id, user_id=data.participant_id)
-    db.add_all([p1, p2])
+    db.add(p2)
     await db.flush()
     await db.refresh(conv)
 

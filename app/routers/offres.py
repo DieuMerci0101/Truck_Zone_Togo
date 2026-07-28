@@ -11,11 +11,14 @@ from app.models.user import User
 from app.models.offre import OffreRecrutement
 from app.models.candidature import Candidature
 from app.models.conversation import Conversation, ConversationParticipant
+from app.models.proprietaire import ProfilProprietaire
 from app.routers.auth import get_current_user
+from app.utils.notifications import notify_user
 
 router = APIRouter(prefix="/api/offres", tags=["Offres"])
 
 EDIT_WINDOW_MINUTES = 5
+OFFRE_EXPIRATION_DAYS = 30
 
 
 def _is_editable(created_at) -> bool:
@@ -26,10 +29,42 @@ def _is_editable(created_at) -> bool:
     return (now - created) <= timedelta(minutes=EDIT_WINDOW_MINUTES)
 
 
-def _offre_out(o: OffreRecrutement) -> dict:
+def _is_expired(expires_at) -> bool:
+    if not expires_at:
+        return False
+    now = datetime.now(timezone.utc)
+    exp = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
+    return now > exp
+
+
+async def _offre_out(o: OffreRecrutement, db: AsyncSession) -> dict:
+    proprietaire_info = None
+    try:
+        profil_result = await db.execute(
+            select(ProfilProprietaire).where(ProfilProprietaire.id == o.proprietaire_id)
+        )
+        profil = profil_result.scalar_one_or_none()
+        if profil:
+            user_result = await db.execute(
+                select(User).where(User.id == profil.user_id)
+            )
+            user = user_result.scalar_one_or_none()
+            if user:
+                proprietaire_info = {
+                    "nom_complet": user.nom_complet,
+                    "nom_entreprise": profil.nom_entreprise,
+                    "photo_profil": user.photo_profil,
+                    "telephone": user.telephone,
+                }
+    except Exception:
+        pass
+
+    expired = _is_expired(o.expires_at)
+
     return {
         "id": str(o.id),
         "proprietaire_id": str(o.proprietaire_id),
+        "proprietaire_info": proprietaire_info,
         "titre": o.titre,
         "description": o.description,
         "type_contrat": o.type_contrat.value if hasattr(o.type_contrat, "value") else o.type_contrat,
@@ -37,9 +72,11 @@ def _offre_out(o: OffreRecrutement) -> dict:
         "zone_travail": o.zone_travail,
         "date_debut": str(o.date_debut),
         "camion_id": str(o.camion_id) if o.camion_id else None,
-        "statut": o.statut.value if hasattr(o.statut, "value") else o.statut,
+        "statut": "expirée" if expired else (o.statut.value if hasattr(o.statut, "value") else o.statut),
         "created_at": o.created_at.isoformat() if o.created_at else None,
-        "is_editable": _is_editable(o.created_at),
+        "expires_at": o.expires_at.isoformat() if o.expires_at else None,
+        "is_editable": _is_editable(o.created_at) and not expired,
+        "is_expired": expired,
     }
 
 
@@ -61,7 +98,7 @@ async def list_offres(
     query = query.order_by(OffreRecrutement.created_at.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
     offres = result.scalars().all()
-    return [_offre_out(o) for o in offres]
+    return [await _offre_out(o, db) for o in offres]
 
 
 @router.get("/{offre_id}")
@@ -72,7 +109,7 @@ async def get_offre(offre_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     offre = result.scalar_one_or_none()
     if not offre:
         raise HTTPException(status_code=404, detail="Offre non trouvée")
-    return _offre_out(offre)
+    return await _offre_out(offre, db)
 
 
 @router.post("/{offre_id}/candidater")
@@ -85,12 +122,20 @@ async def postuler_offre(
     if current_user.role.value != "chauffeur":
         raise HTTPException(status_code=403, detail="Réservé aux chauffeurs")
 
+    message = body.get("message", "").strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="Un message d'accompagnement est obligatoire")
+
     result = await db.execute(
         select(OffreRecrutement).where(OffreRecrutement.id == offre_id)
     )
     offre = result.scalar_one_or_none()
     if not offre:
         raise HTTPException(status_code=404, detail="Offre non trouvée")
+
+    expired = _is_expired(offre.expires_at)
+    if expired:
+        raise HTTPException(status_code=400, detail="Cette offre a expiré")
 
     existing = await db.execute(
         select(Candidature).where(
@@ -105,19 +150,19 @@ async def postuler_offre(
         id=uuid.uuid4(),
         offre_id=str(offre_id),
         chauffeur_id=str(current_user.id),
-        message=body.get("message", ""),
+        message=message,
         statut="en_attente",
     )
     db.add(candidature)
 
     conversation_id = None
-    from app.models.proprietaire import ProfilProprietaire
     profil_result = await db.execute(
         select(ProfilProprietaire).where(ProfilProprietaire.id == offre.proprietaire_id)
     )
     profil = profil_result.scalar_one_or_none()
     if profil:
         owner_user_id = str(profil.user_id)
+
         conv_check = await db.execute(
             select(ConversationParticipant).join(
                 Conversation, ConversationParticipant.conversation_id == Conversation.id
@@ -144,9 +189,28 @@ async def postuler_offre(
             db.add(conv)
             await db.flush()
             db.add(ConversationParticipant(conversation_id=conv.id, user_id=current_user.id))
+            await db.flush()
             db.add(ConversationParticipant(conversation_id=conv.id, user_id=owner_user_id))
             await db.flush()
             conversation_id = str(conv.id)
+
+        await notify_user(
+            db,
+            user_id=profil.user_id,
+            titre="Nouvelle candidature reçue",
+            contenu=f"{current_user.nom_complet} a postulé à votre offre « {offre.titre} ».",
+            type_notif="admin",
+            lien=f"/dashboard/proprietaire/offres",
+        )
+
+    await notify_user(
+        db,
+        user_id=current_user.id,
+        titre="Candidature envoyée",
+        contenu=f"Votre candidature à l'offre « {offre.titre} » a été envoyée avec succès.",
+        type_notif="admin",
+        lien=f"/dashboard/chauffeur/offres",
+    )
 
     await db.flush()
     return {

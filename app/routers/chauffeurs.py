@@ -4,6 +4,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.user import User
@@ -199,7 +200,9 @@ async def _get_my_chauffeur_profile(current_user: User, db: AsyncSession) -> Pro
 async def _verify_chauffeur_camion(current_user: User, camion_id: uuid.UUID, db: AsyncSession) -> Camion:
     profil = await _get_my_chauffeur_profile(current_user, db)
     result = await db.execute(
-        select(Camion).where(Camion.id == camion_id, Camion.chauffeur_id == profil.id)
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(Camion.id == camion_id, Camion.chauffeur_id == profil.id)
     )
     camion = result.scalar_one_or_none()
     if not camion:
@@ -214,7 +217,9 @@ async def list_my_camions(
 ):
     profil = await _get_my_chauffeur_profile(current_user, db)
     result = await db.execute(
-        select(Camion).where(Camion.chauffeur_id == profil.id)
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(Camion.chauffeur_id == profil.id)
     )
     return result.scalars().all()
 
@@ -242,7 +247,13 @@ async def create_camion(
     db.add(camion)
     await db.flush()
     await db.refresh(camion)
-    return camion
+
+    result = await db.execute(
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(Camion.id == camion.id)
+    )
+    return result.scalar_one()
 
 
 @router.get("/me/camions/{camion_id}", response_model=CamionOut)
@@ -268,7 +279,13 @@ async def update_camion(
         setattr(camion, field, value)
     await db.flush()
     await db.refresh(camion)
-    return camion
+
+    result = await db.execute(
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(Camion.id == camion.id)
+    )
+    return result.scalar_one()
 
 
 @router.delete("/me/camions/{camion_id}")

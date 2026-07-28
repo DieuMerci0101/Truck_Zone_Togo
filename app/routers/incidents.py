@@ -16,6 +16,7 @@ from app.schemas.incident import (
     IncidentStatistiques,
     IncidentUpdate,
 )
+from app.utils.notifications import notify_all_admins, notify_user
 
 router = APIRouter(prefix="/api/incidents", tags=["Incidents"])
 
@@ -95,6 +96,26 @@ async def create_incident(
     db.add(incident)
     await db.flush()
     await db.refresh(incident)
+
+    type_label = data.type_incident
+    gravite_label = data.gravite
+    await notify_all_admins(
+        db,
+        titre="Nouvel incident déclaré",
+        contenu=f"Un incident de type « {type_label} » de gravité « {gravite_label } » a été déclaré. Description: {data.description[:100] if data.description else 'N/A'}",
+        type_notif="incident",
+        lien=f"/dashboard/admin/incidents",
+    )
+
+    await notify_user(
+        db,
+        user_id=current_user.id,
+        titre="Incident déclaré avec succès",
+        contenu=f"Votre déclaration d'incident de type « {type_label} » a été enregistrée et transmise aux administrateurs.",
+        type_notif="incident",
+        lien=f"/dashboard/chauffeur/incidents",
+    )
+
     return _incident_out(incident)
 
 
