@@ -51,6 +51,16 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    async with engine.begin() as conn:
+        from sqlalchemy import text
+        for stmt in [
+            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)",
+        ]:
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                pass
+
 
 async def close_db():
     await engine.dispose()

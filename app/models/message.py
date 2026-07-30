@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Text, func  # type: ignore
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, func  # type: ignore
 from sqlalchemy.dialects.postgresql import UUID  # type: ignore
 from sqlalchemy.orm import Mapped, mapped_column, relationship  # type: ignore
 
@@ -34,6 +34,7 @@ class Message(Base):
         nullable=False,
         default=TypeMessage.texte,
     )
+    media_url: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     lu: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

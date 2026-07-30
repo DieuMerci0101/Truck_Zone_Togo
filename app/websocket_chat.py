@@ -111,20 +111,21 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
 
             message_type = data.get("type", "texte")
 
-            if message_type == "texte":
-                # Sauvegarder en base
+            if message_type in ("texte", "audio"):
                 async with async_session() as db:
+                    media_url = data.get("media_url")
+                    contenu = data.get("contenu", "")
                     message = Message(
                         id=uuid.uuid4(),
                         conversation_id=conversation_id,
                         expediteur_id=user_id,
-                        contenu=data["contenu"],
-                        type="texte",
+                        contenu=contenu,
+                        type=message_type,
+                        media_url=media_url,
                         lu=False,
                     )
                     db.add(message)
 
-                    # Mettre à jour la conversation
                     result = await db.execute(
                         select(Conversation).where(Conversation.id == conversation_id)
                     )
@@ -132,9 +133,18 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                     if conv:
                         conv.updated_at = datetime.utcnow()
 
+                    # Fetch sender info
+                    sender_result = await db.execute(
+                        select(User).where(User.id == user_id)
+                    )
+                    sender = sender_result.scalar_one_or_none()
+
                     await db.commit()
 
-                # Broadcaster à tous les participants
+                sender_nom = sender.nom_complet if sender else None
+                sender_avatar = sender.photo_profil if sender else None
+                sender_role = sender.role.value if sender and hasattr(sender.role, "value") else (sender.role if sender else None)
+
                 await manager.broadcast(
                     conversation_id,
                     {
@@ -142,15 +152,19 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                         "id": str(message.id),
                         "conversation_id": conversation_id,
                         "expediteur_id": user_id,
-                        "contenu": data["contenu"],
-                        "message_type": "texte",
+                        "contenu": contenu,
+                        "message_type": message_type,
+                        "media_url": media_url,
+                        "lu": False,
                         "created_at": datetime.utcnow().isoformat(),
+                        "expediteur_nom": sender_nom,
+                        "expediteur_avatar": sender_avatar,
+                        "expediteur_role": sender_role,
                     },
                     exclude_user=user_id,
                 )
 
             elif message_type == "typing":
-                # Indicateur "en train d'écrire"
                 await manager.broadcast(
                     conversation_id,
                     {
@@ -162,16 +176,18 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                 )
 
             elif message_type == "read":
-                # Marquer les messages comme lus
                 async with async_session() as db:
-                    await db.execute(
+                    result = await db.execute(
                         select(Message).where(
                             Message.conversation_id == conversation_id,
                             Message.expediteur_id != user_id,
                             Message.lu == False,
                         )
                     )
-                    # TODO: update lu=True
+                    unread = result.scalars().all()
+                    for m in unread:
+                        m.lu = True
+                    await db.commit()
 
     except WebSocketDisconnect:
         await manager.disconnect(conversation_id, user_id)

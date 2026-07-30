@@ -127,6 +127,7 @@ class TypeMessage(str, enum.Enum):
     texte = "texte"
     image = "image"
     fichier = "fichier"
+    audio = "audio"
 
 
 class TypeIncident(str, enum.Enum):

@@ -41,7 +41,7 @@ class ConversationOut(BaseModel):
 
 class MessageCreate(BaseModel):
     contenu: str = Field(..., min_length=1)
-    type: str = Field(default="texte", pattern=r"^(texte|image|fichier)$")
+    type: str = Field(default="texte", pattern=r"^(texte|image|fichier|audio)$")
 
 
 class MessageOut(BaseModel):
@@ -50,7 +50,11 @@ class MessageOut(BaseModel):
     expediteur_id: uuid.UUID
     contenu: str
     type: str
+    media_url: Optional[str] = None
     lu: bool
     created_at: datetime
+    expediteur_nom: Optional[str] = None
+    expediteur_avatar: Optional[str] = None
+    expediteur_role: Optional[str] = None
 
     model_config = {"from_attributes": True}

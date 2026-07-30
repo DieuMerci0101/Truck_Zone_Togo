@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -251,6 +252,25 @@ async def get_conversation(
     )
 
 
+def _enrich_message(msg: Message) -> MessageOut:
+    """Build a MessageOut with sender info populated from the message relationship."""
+    sender = msg.expediteur
+    type_val = msg.type.value if hasattr(msg.type, "value") else msg.type
+    return MessageOut(
+        id=msg.id,
+        conversation_id=msg.conversation_id,
+        expediteur_id=msg.expediteur_id,
+        contenu=msg.contenu,
+        type=type_val,
+        media_url=msg.media_url,
+        lu=msg.lu,
+        created_at=msg.created_at,
+        expediteur_nom=sender.nom_complet if sender else None,
+        expediteur_avatar=sender.photo_profil if sender else None,
+        expediteur_role=sender.role.value if sender and hasattr(sender.role, "value") else (sender.role if sender else None),
+    )
+
+
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])
 async def list_messages(
     conversation_id: uuid.UUID,
@@ -263,23 +283,13 @@ async def list_messages(
     result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conversation_id)
+        .options(selectinload(Message.expediteur))
         .order_by(Message.created_at.desc())
         .offset(skip)
         .limit(limit)
     )
     messages = result.scalars().all()
-    return [
-        MessageOut(
-            id=m.id,
-            conversation_id=m.conversation_id,
-            expediteur_id=m.expediteur_id,
-            contenu=m.contenu,
-            type=m.type.value if hasattr(m.type, "value") else m.type,
-            lu=m.lu,
-            created_at=m.created_at,
-        )
-        for m in reversed(messages)
-    ]
+    return [_enrich_message(m) for m in reversed(messages)]
 
 
 @router.post("/{conversation_id}/messages", response_model=MessageOut, status_code=201)
@@ -308,15 +318,71 @@ async def send_message(
 
     await db.flush()
     await db.refresh(msg)
-    return MessageOut(
-        id=msg.id,
-        conversation_id=msg.conversation_id,
-        expediteur_id=msg.expediteur_id,
-        contenu=msg.contenu,
-        type=msg.type.value if hasattr(msg.type, "value") else msg.type,
-        lu=msg.lu,
-        created_at=msg.created_at,
+    # Re-fetch with expediteur relation loaded
+    result = await db.execute(
+        select(Message).where(Message.id == msg.id).options(selectinload(Message.expediteur))
     )
+    msg_with_sender = result.scalar_one()
+    return _enrich_message(msg_with_sender)
+
+
+AUDIO_ALLOWED = {"audio/webm", "audio/mp3", "audio/mpeg", "audio/ogg", "audio/wav"}
+
+
+@router.post("/{conversation_id}/messages/audio", response_model=MessageOut, status_code=201)
+async def send_audio_message(
+    conversation_id: uuid.UUID,
+    file: UploadFile = File(...),
+    contenu: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_conversation_with_access(conversation_id, current_user, db)
+
+    if file.content_type not in AUDIO_ALLOWED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Format audio non supporté: {file.content_type}. Formats acceptés: webm, mp3, ogg, wav",
+        )
+
+    # Ensure upload directory exists
+    import os
+    upload_dir = "uploads/audios"
+    os.makedirs(upload_dir, exist_ok=True)
+
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "webm"
+    filename = f"{uuid.uuid4()}.{ext}"
+    filepath = f"{upload_dir}/{filename}"
+
+    content = await file.read()
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    media_url = f"/uploads/audios/{filename}"
+
+    msg = Message(
+        id=uuid.uuid4(),
+        conversation_id=conversation_id,
+        expediteur_id=current_user.id,
+        contenu=contenu or "",
+        type="audio",
+        media_url=media_url,
+    )
+    db.add(msg)
+
+    conv_result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    conv = conv_result.scalar_one()
+    conv.updated_at = datetime.now(timezone.utc)
+
+    await db.flush()
+    await db.refresh(msg)
+    result = await db.execute(
+        select(Message).where(Message.id == msg.id).options(selectinload(Message.expediteur))
+    )
+    msg_with_sender = result.scalar_one()
+    return _enrich_message(msg_with_sender)
 
 
 @router.put("/{conversation_id}/lire")
