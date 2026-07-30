@@ -2,13 +2,27 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field # type: ignore
+from pydantic import BaseModel, Field
+
+
+# ─── User info (lightweight, embedded in conversation) ───
+
+class ParticipantOut(BaseModel):
+    id: uuid.UUID
+    nom_complet: str
+    email: str
+    telephone: str
+    role: str
+    photo_profil: Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 # ─── Conversation ───────────────────────────────────
 
 class ConversationCreate(BaseModel):
     participant_id: uuid.UUID
+    premier_message: Optional[str] = None
 
 
 class ConversationOut(BaseModel):
@@ -18,15 +32,9 @@ class ConversationOut(BaseModel):
     updated_at: datetime
     last_message: Optional[str] = None
     last_message_at: Optional[datetime] = None
+    participants: list[ParticipantOut] = []
 
     model_config = {"from_attributes": True}
-
-
-class ConversationParticipantOut(BaseModel):
-    user_id: uuid.UUID
-    nom_complet: str
-    photo_url: Optional[str] = None
-    is_online: bool = False
 
 
 # ─── Message ────────────────────────────────────────

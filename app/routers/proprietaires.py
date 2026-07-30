@@ -2,7 +2,8 @@ import os
 import uuid
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, File
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,7 +16,9 @@ from app.models.camion_photo import CamionPhoto
 from app.models.offre import OffreRecrutement
 from app.models.assistance import DemandeAssistance
 from app.models.conversation import Conversation, ConversationParticipant
-from app.routers.auth import get_current_user
+from app.models.document import Document
+from app.models.enums import TypeDocument
+from app.routers.auth import get_current_user, require_verified
 from app.schemas.proprietaire import (
     CamionCreate,
     CamionOut,
@@ -161,19 +164,29 @@ async def _get_my_profil(current_user: User, db: AsyncSession) -> ProfilPropriet
     )
     profil = result.scalar_one_or_none()
     if not profil:
-        raise HTTPException(status_code=404, detail="Profil propriétaire non trouvé — créez-le d'abord")
+        profil = ProfilProprietaire(
+            user_id=current_user.id,
+            type_activite="transport",
+            adresse="",
+        )
+        db.add(profil)
+        await db.flush()
+        await db.refresh(profil)
     return profil
 
 
 @router.get("/me/camions", response_model=list[CamionOut])
 async def list_my_camions(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
     result = await db.execute(
         select(Camion)
-        .options(selectinload(Camion.photos))
+        .options(
+            selectinload(Camion.photos),
+            selectinload(Camion.proprietaire).selectinload(ProfilProprietaire.user),
+        )
         .where(Camion.proprietaire_id == profil.id)
     )
     return result.scalars().all()
@@ -182,7 +195,7 @@ async def list_my_camions(
 @router.post("/me/camions", response_model=CamionOut, status_code=201)
 async def create_camion(
     data: CamionCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -205,7 +218,10 @@ async def create_camion(
 
     result = await db.execute(
         select(Camion)
-        .options(selectinload(Camion.photos))
+        .options(
+            selectinload(Camion.photos),
+            selectinload(Camion.proprietaire).selectinload(ProfilProprietaire.user),
+        )
         .where(Camion.id == camion.id)
     )
     camion = result.scalar_one()
@@ -215,13 +231,16 @@ async def create_camion(
 @router.get("/me/camions/{camion_id}", response_model=CamionOut)
 async def get_camion(
     camion_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
     result = await db.execute(
         select(Camion)
-        .options(selectinload(Camion.photos))
+        .options(
+            selectinload(Camion.photos),
+            selectinload(Camion.proprietaire).selectinload(ProfilProprietaire.user),
+        )
         .where(
             Camion.id == camion_id,
             Camion.proprietaire_id == profil.id,
@@ -237,7 +256,7 @@ async def get_camion(
 async def update_camion(
     camion_id: uuid.UUID,
     data: CamionUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -261,7 +280,10 @@ async def update_camion(
 
     result = await db.execute(
         select(Camion)
-        .options(selectinload(Camion.photos))
+        .options(
+            selectinload(Camion.photos),
+            selectinload(Camion.proprietaire).selectinload(ProfilProprietaire.user),
+        )
         .where(Camion.id == camion.id)
     )
     camion = result.scalar_one()
@@ -271,7 +293,7 @@ async def update_camion(
 @router.delete("/me/camions/{camion_id}")
 async def delete_camion(
     camion_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -293,7 +315,7 @@ async def delete_camion(
 async def upload_camion_photo(
     camion_id: uuid.UUID,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -348,7 +370,7 @@ async def upload_camion_photo(
 async def delete_camion_photo(
     camion_id: uuid.UUID,
     photo_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -398,7 +420,7 @@ async def delete_camion_photo(
 async def set_main_photo(
     camion_id: uuid.UUID,
     photo_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -430,10 +452,15 @@ async def set_main_photo(
     return {"message": "Photo principale mise à jour"}
 
 
+class PublishCamionRequest(BaseModel):
+    expires_at: str | None = None
+
+
 @router.post("/me/camions/{camion_id}/publish")
 async def toggle_publish_camion(
     camion_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    body: PublishCamionRequest,
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -446,6 +473,22 @@ async def toggle_publish_camion(
     camion = result.scalar_one_or_none()
     if not camion:
         raise HTTPException(status_code=404, detail="Camion non trouvé")
+
+    if not camion.is_public and camion.etat == "en_reparation":
+        raise HTTPException(status_code=400, detail="Impossible de publier un camion en réparation")
+
+    if body.expires_at and not camion.is_public:
+        try:
+            expires = datetime.fromisoformat(body.expires_at)
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Format de date d'expiration invalide")
+        now = datetime.now(timezone.utc)
+        if expires <= now:
+            raise HTTPException(status_code=400, detail="La date d'expiration doit être dans le futur")
+        camion.expires_at = expires
+
     camion.is_public = not camion.is_public
     await db.flush()
     return {"message": f"Camion {'publié' if camion.is_public else 'dépublié'}", "is_public": camion.is_public}
@@ -455,7 +498,7 @@ async def toggle_publish_camion(
 
 @router.get("/me/offres", response_model=list[OffreOut])
 async def list_my_offres(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -485,7 +528,7 @@ async def list_my_offres(
 @router.post("/me/offres", response_model=OffreOut, status_code=201)
 async def create_offre(
     data: OffreCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -524,7 +567,7 @@ async def create_offre(
 @router.get("/me/offres/{offre_id}", response_model=OffreOut)
 async def get_offre(
     offre_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -556,7 +599,7 @@ async def get_offre(
 async def update_offre(
     offre_id: uuid.UUID,
     data: OffreUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -605,7 +648,7 @@ async def update_offre(
 @router.delete("/me/offres/{offre_id}")
 async def delete_offre(
     offre_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_profil(current_user, db)
@@ -632,10 +675,15 @@ async def list_public_camions(
     type_camion: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    now = datetime.now(timezone.utc)
     query = select(Camion).options(
         selectinload(Camion.photos),
         selectinload(Camion.proprietaire).selectinload(ProfilProprietaire.user),
-    ).where(Camion.is_public == True)
+    ).where(
+        Camion.is_public == True,
+        Camion.etat == "bon",
+        (Camion.expires_at == None) | (Camion.expires_at > now),
+    )
     if type_camion:
         query = query.where(Camion.type_camion == type_camion)
     query = query.order_by(Camion.created_at.desc()).offset(skip).limit(limit)
@@ -684,7 +732,7 @@ def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
 @router.post("/me/assistance", response_model=AssistanceOut, status_code=201)
 async def create_assistance(
     data: AssistanceCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     wkt = _localisation_wkt(data.localisation_lat, data.localisation_lng)
@@ -733,7 +781,7 @@ async def create_assistance(
 
 @router.get("/me/assistance", response_model=list[AssistanceOut])
 async def list_my_assistance(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -742,3 +790,82 @@ async def list_my_assistance(
         .order_by(DemandeAssistance.created_at.desc())
     )
     return [_assistance_out(a) for a in result.scalars().all()]
+
+
+# ─── Documents ─────────────────────────────────────
+
+UPLOAD_DIR_DOCS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "documents")
+ALLOWED_DOC_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+MAX_DOC_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@router.post("/me/documents", status_code=201)
+async def upload_document(
+    type_document: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user.role.value != "proprietaire":
+        raise HTTPException(status_code=403, detail="Réservé aux propriétaires")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_DOC_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Format non supporté (PDF, JPG, PNG uniquement)")
+
+    content = await file.read()
+    if len(content) > MAX_DOC_SIZE:
+        raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 10 Mo")
+
+    os.makedirs(UPLOAD_DIR_DOCS, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(UPLOAD_DIR_DOCS, filename)
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    type_doc_enum = None
+    for td in TypeDocument:
+        if td.value == type_document:
+            type_doc_enum = td
+            break
+    if not type_doc_enum:
+        raise HTTPException(status_code=400, detail="Type de document invalide")
+
+    doc = Document(
+        id=uuid.uuid4(),
+        utilisateur_id=current_user.id,
+        type_document=type_doc_enum,
+        fichier_url=f"/uploads/documents/{filename}",
+        statut="en_attente",
+    )
+    db.add(doc)
+    await db.flush()
+    await db.refresh(doc)
+    return {
+        "id": str(doc.id),
+        "type_document": type_document,
+        "fichier_url": doc.fichier_url,
+        "statut": "en_attente",
+        "message": "Document uploadé avec succès",
+    }
+
+
+@router.get("/me/documents")
+async def list_documents(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Document).where(Document.utilisateur_id == current_user.id)
+    )
+    docs = result.scalars().all()
+    return [
+        {
+            "id": str(d.id),
+            "type_document": d.type_document.value if hasattr(d.type_document, 'value') else d.type_document,
+            "fichier_url": d.fichier_url,
+            "statut": d.statut.value if hasattr(d.statut, 'value') else d.statut,
+            "created_at": d.created_at.isoformat(),
+        }
+        for d in docs
+    ]

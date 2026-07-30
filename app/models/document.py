@@ -1,3 +1,4 @@
+import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func  # type: ignore
@@ -14,8 +15,8 @@ if TYPE_CHECKING:
 class Document(Base):
     __tablename__ = "documents"
 
-    id: Mapped[str] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, index=True
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4
     )
     utilisateur_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False

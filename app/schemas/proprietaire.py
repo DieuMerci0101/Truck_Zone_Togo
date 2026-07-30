@@ -3,6 +3,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import inspect as sa_inspect
 
 
 def parse_localisation(loc: str | None) -> tuple[Optional[float], Optional[float]]:
@@ -116,6 +117,17 @@ class CamionUpdate(BaseModel):
     localisation: Optional[str] = Field(None, max_length=255)
 
 
+class ProprietaireInfoOut(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    nom_complet: str
+    email: str
+    telephone: str
+    photo_profil: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
 class CamionOut(BaseModel):
     id: uuid.UUID
     proprietaire_id: Optional[uuid.UUID] = None
@@ -130,15 +142,44 @@ class CamionOut(BaseModel):
     description: Optional[str] = None
     photo_principale_url: Optional[str] = None
     is_public: bool = False
+    expires_at: Optional[datetime] = None
     nb_essieux: Optional[int] = None
     carburant: Optional[str] = None
     boite_vitesse: Optional[str] = None
     kilometrage: Optional[float] = None
     localisation: Optional[str] = None
     photos: list[CamionPhotoOut] = []
+    proprietaire_info: Optional[ProprietaireInfoOut] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_proprietaire_info(cls, data):
+        prop = None
+        if isinstance(data, dict):
+            prop = data.get("proprietaire")
+        else:
+            insp = sa_inspect(data)
+            if "proprietaire" not in insp.unloaded:
+                prop = data.proprietaire
+        if prop is not None:
+            user = getattr(prop, "user", None) if not isinstance(prop, dict) else prop.get("user")
+            if user is not None:
+                info = {
+                    "id": getattr(prop, "id", None) if not isinstance(prop, dict) else prop.get("id"),
+                    "user_id": getattr(user, "id", None) if not isinstance(user, dict) else user.get("id"),
+                    "nom_complet": getattr(user, "nom_complet", None) if not isinstance(user, dict) else user.get("nom_complet"),
+                    "email": getattr(user, "email", None) if not isinstance(user, dict) else user.get("email"),
+                    "telephone": getattr(user, "telephone", None) if not isinstance(user, dict) else user.get("telephone"),
+                    "photo_profil": getattr(user, "photo_profil", None) if not isinstance(user, dict) else user.get("photo_profil"),
+                }
+                if isinstance(data, dict):
+                    data["proprietaire_info"] = info
+                else:
+                    setattr(data, "proprietaire_info", info)
+        return data
 
 
 # ─── Offre de recrutement ──────────────────────────

@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy.orm import selectinload
+
 from app.database import get_db
 from app.models.user import User
 from app.models.mecanicien import ProfilMecanicien
@@ -52,17 +54,7 @@ class MecanicienPositionUpdate(BaseModel):
 
 
 def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
-    return AssistanceOut(
-        id=a.id,
-        demandeur_id=a.demandeur_id,
-        mecanicien_id=a.mecanicien_id,
-        type_panne=a.type_panne.value if hasattr(a.type_panne, "value") else a.type_panne,
-        description=a.description,
-        urgence=a.urgence.value if hasattr(a.urgence, "value") else a.urgence,
-        vehicule_description=a.vehicule_description,
-        statut=a.statut.value if hasattr(a.statut, "value") else a.statut,
-        created_at=a.created_at,
-    )
+    return AssistanceOut.model_validate(a)
 
 
 @router.get("/me", response_model=ProfilMecanicienOut)
@@ -71,7 +63,9 @@ async def get_my_profile(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
+        select(ProfilMecanicien)
+        .options(selectinload(ProfilMecanicien.user))
+        .where(ProfilMecanicien.user_id == current_user.id)
     )
     profil = result.scalar_one_or_none()
     if not profil:
@@ -167,6 +161,10 @@ async def list_my_assistance(
 ):
     result = await db.execute(
         select(DemandeAssistance)
+        .options(
+            selectinload(DemandeAssistance.demandeur),
+            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
+        )
         .where(DemandeAssistance.demandeur_id == current_user.id)
         .order_by(DemandeAssistance.created_at.desc())
     )
@@ -192,7 +190,56 @@ async def create_assistance(
     db.add(assistance)
     await db.flush()
     await db.refresh(assistance)
+    assistance.demandeur = current_user
     return _assistance_out(assistance)
+
+
+@router.get("/assistance/disponibles", response_model=list[AssistanceOut])
+async def list_available_assistance(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Liste toutes les demandes actives (non terminées) pour les mécaniciens."""
+    result = await db.execute(
+        select(DemandeAssistance)
+        .options(
+            selectinload(DemandeAssistance.demandeur),
+            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
+        )
+        .where(DemandeAssistance.statut != "terminee")
+        .order_by(DemandeAssistance.created_at.desc())
+    )
+    return [_assistance_out(a) for a in result.scalars().all()]
+
+
+@router.put("/assistance/{assistance_id}/prendre")
+async def take_assistance(
+    assistance_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Le mécanicien prend en charge une demande."""
+    result = await db.execute(
+        select(DemandeAssistance).where(DemandeAssistance.id == assistance_id)
+    )
+    assistance = result.scalar_one_or_none()
+    if not assistance:
+        raise HTTPException(status_code=404, detail="Demande non trouvée")
+    if assistance.statut != "en_attente":
+        raise HTTPException(status_code=400, detail="Demande déjà prise en charge")
+
+    # Récupérer le profil mécanicien
+    profil_result = await db.execute(
+        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
+    )
+    profil = profil_result.scalar_one_or_none()
+    if not profil:
+        raise HTTPException(status_code=400, detail="Profil mécanicien introuvable")
+
+    assistance.mecanicien_id = profil.id
+    assistance.statut = "pris_en_charge"
+    await db.flush()
+    return {"message": "Demande prise en charge", "statut": "pris_en_charge"}
 
 
 @router.get("/assistance/{assistance_id}", response_model=AssistanceOut)
@@ -202,7 +249,12 @@ async def get_assistance(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(DemandeAssistance).where(DemandeAssistance.id == assistance_id)
+        select(DemandeAssistance)
+        .options(
+            selectinload(DemandeAssistance.demandeur),
+            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
+        )
+        .where(DemandeAssistance.id == assistance_id)
     )
     assistance = result.scalar_one_or_none()
     if not assistance:
@@ -218,11 +270,26 @@ async def update_assistance_statut(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(DemandeAssistance).where(DemandeAssistance.id == assistance_id)
+        select(DemandeAssistance)
+        .options(
+            selectinload(DemandeAssistance.demandeur),
+            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
+        )
+        .where(DemandeAssistance.id == assistance_id)
     )
     assistance = result.scalar_one_or_none()
     if not assistance:
         raise HTTPException(status_code=404, detail="Demande non trouvée")
+
+    # Seul le mécanicien assigné peut modifier le statut
+    if assistance.mecanicien_id:
+        profil_result = await db.execute(
+            select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
+        )
+        profil = profil_result.scalar_one_or_none()
+        if not profil or str(profil.id) != str(assistance.mecanicien_id):
+            raise HTTPException(status_code=403, detail="Seul le mécanicien assigné peut modifier le statut")
+
     assistance.statut = data.statut
     await db.flush()
     return {"message": "Statut mis à jour", "statut": assistance.statut}
@@ -240,8 +307,10 @@ async def get_mecaniciens_proches(
     specialite: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(ProfilMecanicien).where(
-        ProfilMecanicien.disponibilite == "disponible"
+    query = (
+        select(ProfilMecanicien)
+        .options(selectinload(ProfilMecanicien.user))
+        .where(ProfilMecanicien.disponibilite == "disponible")
     )
     if specialite:
         query = query.where(ProfilMecanicien.specialites.any(specialite))
@@ -270,7 +339,7 @@ async def list_mecaniciens(
     tarification: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(ProfilMecanicien)
+    query = select(ProfilMecanicien).options(selectinload(ProfilMecanicien.user))
     if specialite:
         query = query.where(ProfilMecanicien.specialites.any(specialite))
     if disponibilite:
@@ -286,7 +355,9 @@ async def get_mecanicien(
     mecanicien_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
-        select(ProfilMecanicien).where(ProfilMecanicien.id == mecanicien_id)
+        select(ProfilMecanicien)
+        .options(selectinload(ProfilMecanicien.user))
+        .where(ProfilMecanicien.id == mecanicien_id)
     )
     profil = result.scalar_one_or_none()
     if not profil:

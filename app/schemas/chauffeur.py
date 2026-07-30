@@ -40,6 +40,17 @@ class ProfilChauffeurUpdate(BaseModel):
     photo_url: Optional[str] = None
 
 
+class UserInfo(BaseModel):
+    id: uuid.UUID
+    nom_complet: str
+    email: str
+    telephone: str
+    role: str
+    photo_profil: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
 class ProfilChauffeurOut(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
@@ -52,6 +63,7 @@ class ProfilChauffeurOut(BaseModel):
     bio: Optional[str] = None
     photo_url: Optional[str] = None
     created_at: datetime
+    user: Optional[UserInfo] = None
 
     model_config = {"from_attributes": True}
 

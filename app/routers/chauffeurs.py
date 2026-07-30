@@ -1,7 +1,8 @@
 import os
 import uuid
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -12,6 +13,7 @@ from app.models.chauffeur import ProfilChauffeur
 from app.models.camion import Camion
 from app.models.camion_photo import CamionPhoto
 from app.models.document import Document
+from app.models.enums import TypeDocument
 from app.routers.auth import get_current_user
 from app.schemas.chauffeur import (
     DisponibiliteUpdate,
@@ -20,6 +22,10 @@ from app.schemas.chauffeur import (
     ProfilChauffeurUpdate,
 )
 from app.schemas.proprietaire import CamionCreate, CamionOut, CamionUpdate, CamionPhotoOut
+
+DOCUMENT_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "documents")
+DOCUMENT_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+DOCUMENT_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 router = APIRouter(prefix="/api/chauffeurs", tags=["Chauffeurs"])
 
@@ -38,7 +44,10 @@ async def list_chauffeurs(
     experience_min: int | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(ProfilChauffeur)
+    query = (
+        select(ProfilChauffeur)
+        .options(selectinload(ProfilChauffeur.user))
+    )
     if disponibilite:
         query = query.where(ProfilChauffeur.disponibilite == disponibilite)
     if categorie_permis:
@@ -148,20 +157,44 @@ async def update_disponibilite(
 
 @router.post("/me/documents", status_code=201)
 async def upload_document(
+    type_document: str = Form(...),
+    file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in DOCUMENT_ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Format non supporté (PDF, JPG, PNG uniquement)")
+
+    content = await file.read()
+    if len(content) > DOCUMENT_MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 10 Mo")
+
+    os.makedirs(DOCUMENT_UPLOAD_DIR, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(DOCUMENT_UPLOAD_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    type_doc_enum = None
+    for td in TypeDocument:
+        if td.value == type_document:
+            type_doc_enum = td
+            break
+    if not type_doc_enum:
+        raise HTTPException(status_code=400, detail="Type de document invalide")
+
     doc = Document(
         id=uuid.uuid4(),
         utilisateur_id=current_user.id,
-        type_document="permis",
-        fichier_url="/uploads/placeholder.pdf",
+        type_document=type_doc_enum,
+        fichier_url=f"/uploads/documents/{filename}",
         statut="en_attente",
     )
     db.add(doc)
     await db.flush()
     await db.refresh(doc)
-    return {"id": str(doc.id), "message": "Document uploadé"}
+    return {"id": str(doc.id), "message": "Document uploadé", "url": doc.fichier_url}
 
 
 @router.get("/me/documents")
@@ -179,6 +212,8 @@ async def list_documents(
             "type_document": d.type_document.value if hasattr(d.type_document, 'value') else d.type_document,
             "fichier_url": d.fichier_url,
             "statut": d.statut.value if hasattr(d.statut, 'value') else d.statut,
+            "commentaire_admin": d.commentaire_admin,
+            "validated_at": d.validated_at.isoformat() if d.validated_at else None,
             "created_at": d.created_at.isoformat(),
         }
         for d in docs
@@ -415,13 +450,37 @@ async def set_main_photo(
     return {"message": "Photo principale mise à jour"}
 
 
+from pydantic import BaseModel
+
+
+class PublishCamionRequest(BaseModel):
+    expires_at: str | None = None
+
+
 @router.post("/me/camions/{camion_id}/publish")
 async def toggle_publish_camion(
     camion_id: uuid.UUID,
+    body: PublishCamionRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     camion = await _verify_chauffeur_camion(current_user, camion_id, db)
+
+    if not camion.is_public and camion.etat == "en_reparation":
+        raise HTTPException(status_code=400, detail="Impossible de publier un camion en réparation")
+
+    if body.expires_at and not camion.is_public:
+        try:
+            expires = datetime.fromisoformat(body.expires_at)
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Format de date d'expiration invalide")
+        now = datetime.now(timezone.utc)
+        if expires <= now:
+            raise HTTPException(status_code=400, detail="La date d'expiration doit être dans le futur")
+        camion.expires_at = expires
+
     camion.is_public = not camion.is_public
     await db.flush()
     return {"message": f"Camion {'publié' if camion.is_public else 'dépublié'}", "is_public": camion.is_public}

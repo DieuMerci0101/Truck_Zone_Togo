@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.user import User
@@ -15,6 +16,7 @@ from app.schemas.incident import (
     IncidentOut,
     IncidentStatistiques,
     IncidentUpdate,
+    StatutIncidentUpdate,
 )
 from app.utils.notifications import notify_all_admins, notify_user
 
@@ -26,19 +28,7 @@ def _localisation_wkt(lat: float, lng: float) -> str:
 
 
 def _incident_out(i: Incident) -> IncidentOut:
-    return IncidentOut(
-        id=i.id,
-        declarant_id=i.declarant_id,
-        type_incident=i.type_incident.value if hasattr(i.type_incident, "value") else i.type_incident,
-        date_incident=i.date_incident,
-        description=i.description,
-        gravite=i.gravite.value if hasattr(i.gravite, "value") else i.gravite,
-        vehicules_impliques=i.vehicules_impliques,
-        victimes=i.victimes,
-        nombre_victimes=i.nombre_victimes,
-        statut=i.statut.value if hasattr(i.statut, "value") else i.statut,
-        created_at=i.created_at,
-    )
+    return IncidentOut.model_validate(i)
 
 
 def _commentaire_out(c: IncidentCommentaire) -> IncidentCommentaireOut:
@@ -60,7 +50,9 @@ async def list_incidents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Incident)
+    query = select(Incident).options(selectinload(Incident.declarant))
+    if current_user.role.value != "admin":
+        query = query.where(Incident.declarant_id == current_user.id)
     if statut:
         query = query.where(Incident.statut == statut)
     if type_incident:
@@ -96,6 +88,7 @@ async def create_incident(
     db.add(incident)
     await db.flush()
     await db.refresh(incident)
+    incident.declarant = current_user
 
     type_label = data.type_incident
     gravite_label = data.gravite
@@ -152,9 +145,34 @@ async def get_incidents_proches(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Incident).order_by(Incident.created_at.desc()).limit(50)
+        select(Incident)
+        .options(selectinload(Incident.declarant))
+        .order_by(Incident.created_at.desc()).limit(50)
     )
     return [_incident_out(i) for i in result.scalars().all()]
+
+
+@router.put("/{incident_id}/statut")
+async def update_incident_statut(
+    incident_id: uuid.UUID,
+    data: StatutIncidentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin può chiudere o aggiornare lo statuto di un incident."""
+    if current_user.role.value != "admin":
+        raise HTTPException(status_code=403, detail="Réservé aux administrateurs")
+    result = await db.execute(
+        select(Incident)
+        .options(selectinload(Incident.declarant))
+        .where(Incident.id == incident_id)
+    )
+    incident = result.scalar_one_or_none()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident non trouvé")
+    incident.statut = data.statut
+    await db.flush()
+    return {"message": "Statut mis à jour", "statut": incident.statut}
 
 
 @router.get("/{incident_id}", response_model=IncidentOut)
@@ -163,7 +181,11 @@ async def get_incident(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Incident).where(Incident.id == incident_id))
+    result = await db.execute(
+        select(Incident)
+        .options(selectinload(Incident.declarant))
+        .where(Incident.id == incident_id)
+    )
     incident = result.scalar_one_or_none()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident non trouvé")
@@ -177,7 +199,11 @@ async def update_incident(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Incident).where(Incident.id == incident_id))
+    result = await db.execute(
+        select(Incident)
+        .options(selectinload(Incident.declarant))
+        .where(Incident.id == incident_id)
+    )
     incident = result.scalar_one_or_none()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident non trouvé")

@@ -44,6 +44,34 @@ async def _get_conversation_with_access(
     return conv
 
 
+async def _fetch_participants(
+    conversation_id: uuid.UUID,
+    db: AsyncSession,
+) -> list["ParticipantOut"]:
+    from app.schemas.conversation import ParticipantOut
+
+    result = await db.execute(
+        select(ConversationParticipant)
+        .where(ConversationParticipant.conversation_id == conversation_id)
+        .options(selectinload(ConversationParticipant.user))
+    )
+    parts = result.scalars().all()
+    out = []
+    for p in parts:
+        u = p.user
+        if u is None:
+            continue
+        out.append(ParticipantOut(
+            id=u.id,
+            nom_complet=u.nom_complet,
+            email=u.email,
+            telephone=u.telephone,
+            role=u.role.value if hasattr(u.role, "value") else u.role,
+            photo_profil=u.photo_profil,
+        ))
+    return out
+
+
 @router.get("/", response_model=list[ConversationOut])
 async def list_conversations(
     skip: int = Query(0, ge=0),
@@ -78,6 +106,7 @@ async def list_conversations(
             .limit(1)
         )
         last_msg = last_msg_result.scalar_one_or_none()
+        participants = await _fetch_participants(conv.id, db)
         out.append(ConversationOut(
             id=conv.id,
             type=conv.type.value if hasattr(conv.type, "value") else conv.type,
@@ -85,6 +114,7 @@ async def list_conversations(
             updated_at=conv.updated_at,
             last_message=last_msg.contenu if last_msg else None,
             last_message_at=last_msg.created_at if last_msg else None,
+            participants=participants,
         ))
     return out
 
@@ -118,8 +148,40 @@ async def create_conversation(
                 ConversationParticipant.user_id == data.participant_id,
             )
         )
-        if other_parts.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="Conversation déjà existante")
+        existing = other_parts.scalar_one_or_none()
+        if existing:
+            # If premier_message is provided, send it in the existing conversation
+            if data.premier_message:
+                msg = Message(
+                    id=uuid.uuid4(),
+                    conversation_id=existing.conversation_id,
+                    expediteur_id=current_user.id,
+                    contenu=data.premier_message,
+                    type="texte",
+                )
+                db.add(msg)
+                now = datetime.now(timezone.utc)
+                conv_update = await db.execute(
+                    select(Conversation).where(Conversation.id == existing.conversation_id)
+                )
+                existing_conv = conv_update.scalar_one()
+                existing_conv.updated_at = now
+                await db.commit()
+                await db.refresh(existing_conv)
+                participants = await _fetch_participants(existing_conv.id, db)
+                return ConversationOut(
+                    id=existing_conv.id,
+                    type=existing_conv.type.value if hasattr(existing_conv.type, "value") else existing_conv.type,
+                    created_at=existing_conv.created_at,
+                    updated_at=existing_conv.updated_at,
+                    last_message=data.premier_message,
+                    last_message_at=now,
+                    participants=participants,
+                )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Conversation déjà existante: {existing.conversation_id}",
+            )
 
     conv = Conversation(
         id=uuid.uuid4(),
@@ -134,13 +196,32 @@ async def create_conversation(
     p2 = ConversationParticipant(conversation_id=conv.id, user_id=data.participant_id)
     db.add(p2)
     await db.flush()
+
+    # Send first message if provided
+    if data.premier_message:
+        msg = Message(
+            id=uuid.uuid4(),
+            conversation_id=conv.id,
+            expediteur_id=current_user.id,
+            contenu=data.premier_message,
+            type="texte",
+        )
+        db.add(msg)
+        conv.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
     await db.refresh(conv)
+
+    participants = await _fetch_participants(conv.id, db)
 
     return ConversationOut(
         id=conv.id,
         type=conv.type.value if hasattr(conv.type, "value") else conv.type,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
+        last_message=data.premier_message,
+        last_message_at=conv.updated_at if data.premier_message else None,
+        participants=participants,
     )
 
 
@@ -158,6 +239,7 @@ async def get_conversation(
         .limit(1)
     )
     last_msg = last_msg_result.scalar_one_or_none()
+    participants = await _fetch_participants(conv.id, db)
     return ConversationOut(
         id=conv.id,
         type=conv.type.value if hasattr(conv.type, "value") else conv.type,
@@ -165,6 +247,7 @@ async def get_conversation(
         updated_at=conv.updated_at,
         last_message=last_msg.contenu if last_msg else None,
         last_message_at=last_msg.created_at if last_msg else None,
+        participants=participants,
     )
 
 
@@ -234,3 +317,28 @@ async def send_message(
         lu=msg.lu,
         created_at=msg.created_at,
     )
+
+
+@router.put("/{conversation_id}/lire")
+async def mark_conversation_read(
+    conversation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_conversation_with_access(conversation_id, current_user, db)
+
+    result = await db.execute(
+        select(Message).where(
+            Message.conversation_id == conversation_id,
+            Message.expediteur_id != current_user.id,
+            Message.lu == False,
+        )
+    )
+    messages = result.scalars().all()
+    for m in messages:
+        m.lu = True
+    await db.flush()
+    return {
+        "message": "Messages marqués comme lus",
+        "marked": len(messages),
+    }

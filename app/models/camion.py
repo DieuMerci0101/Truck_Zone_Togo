@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import Enum, Float, ForeignKey, Integer, String, Text
+from datetime import datetime
+
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -40,6 +42,7 @@ class Camion(TimestampMixin, Base):
         String(500), nullable=True
     )
     is_public: Mapped[bool] = mapped_column(default=False, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     nb_essieux: Mapped[int | None] = mapped_column(Integer, nullable=True)
     carburant: Mapped[str | None] = mapped_column(String(50), nullable=True)
     boite_vitesse: Mapped[str | None] = mapped_column(String(50), nullable=True)

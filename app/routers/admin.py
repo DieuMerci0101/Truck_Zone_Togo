@@ -27,6 +27,9 @@ from app.models.chauffeur import ProfilChauffeur
 from app.models.proprietaire import ProfilProprietaire
 from app.models.mecanicien import ProfilMecanicien
 from app.models.incident import Incident
+from app.models.assistance import DemandeAssistance
+from app.schemas.incident import IncidentOut
+from app.schemas.mecanicien import AssistanceOut
 from app.routers.auth import require_admin
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -71,6 +74,43 @@ async def get_stats(
         "proprietaires": total_proprietaires,
         "mecaniciens": total_mecaniciens,
         "admins": total_admins,
+    }
+
+
+# ─── Assistance mécanique (supervision admin) ─────
+
+@router.get("/assistance", response_model=dict)
+async def list_all_assistance(
+    statut: str | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy.orm import selectinload
+
+    query = (
+        select(DemandeAssistance)
+        .options(
+            selectinload(DemandeAssistance.demandeur),
+            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
+        )
+        .order_by(DemandeAssistance.created_at.desc())
+    )
+    if statut:
+        query = query.where(DemandeAssistance.statut == statut)
+    result = await db.execute(query)
+    demandes = result.scalars().all()
+
+    total = len(demandes)
+    en_attente = sum(1 for d in demandes if d.statut == "en_attente")
+    pris_en_charge = sum(1 for d in demandes if d.statut == "pris_en_charge")
+    terminee = sum(1 for d in demandes if d.statut == "terminee")
+
+    return {
+        "total": total,
+        "en_attente": en_attente,
+        "pris_en_charge": pris_en_charge,
+        "terminee": terminee,
+        "demandes": [AssistanceOut.model_validate(d) for d in demandes],
     }
 
 
@@ -177,16 +217,20 @@ async def list_all_documents(
     Protégé : uniquement les administrateurs.
     """
     from app.models.document import Document
-    query = select(Document)
+    from sqlalchemy.orm import joinedload
+    query = select(Document).options(joinedload(Document.utilisateur))
     if statut:
         query = query.where(Document.statut == statut)
     query = query.order_by(Document.created_at.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
-    docs = result.scalars().all()
+    docs = result.unique().scalars().all()
     return [
         {
             "id": str(d.id),
             "utilisateur_id": str(d.utilisateur_id),
+            "utilisateur_nom": d.utilisateur.nom_complet if d.utilisateur else None,
+            "utilisateur_email": d.utilisateur.email if d.utilisateur else None,
+            "utilisateur_role": d.utilisateur.role.value if d.utilisateur and hasattr(d.utilisateur.role, "value") else (d.utilisateur.role if d.utilisateur else None),
             "type_document": d.type_document.value if hasattr(d.type_document, "value") else d.type_document,
             "fichier_url": d.fichier_url,
             "statut": d.statut.value if hasattr(d.statut, "value") else d.statut,
@@ -196,10 +240,18 @@ async def list_all_documents(
     ]
 
 
+from pydantic import BaseModel
+
+
+class DocumentStatutUpdate(BaseModel):
+    statut: str
+    motif: str | None = None
+
+
 @router.put("/documents/{document_id}/statut")
 async def update_document_statut(
     document_id: uuid.UUID,
-    statut: str,
+    body: DocumentStatutUpdate,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -207,16 +259,33 @@ async def update_document_statut(
     Met à jour le statut d'un document (validé, rejeté, en_attente).
     Protégé : uniquement les administrateurs.
     Envoie une notification à l'utilisateur concerné.
+    En cas de rejet, envoie un email avec le motif et sauvegarde le commentaire.
     """
     from app.models.document import Document
     from app.utils.notifications import notify_user
+    from app.utils.email import send_document_rejection_email
+    from sqlalchemy.orm import selectinload
 
-    result = await db.execute(select(Document).where(Document.id == document_id))
+    statut = body.statut
+    motif = body.motif
+
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == document_id)
+        .options(selectinload(Document.utilisateur))
+    )
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document non trouvé")
+
+    if statut == "rejete" and not motif:
+        raise HTTPException(status_code=422, detail="Un motif de rejet est obligatoire")
+
     doc.statut = statut
     doc.validated_at = datetime.now(timezone.utc)
+    doc.commentaire_admin = motif if statut == "rejete" else None
+
+    lien_documents = f"/dashboard/{doc.utilisateur.role.value}/documents"
 
     if statut == "valide":
         await notify_user(
@@ -225,21 +294,49 @@ async def update_document_statut(
             titre="Document validé",
             contenu=f"Votre document de type « {doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document} » a été validé par un administrateur.",
             type_notif="document",
-            lien="/dashboard/chauffeur/documents",
+            lien=lien_documents,
         )
         user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))
         user = user_result.scalar_one_or_none()
         if user:
-            user.is_verified = True
+            REQUIRED_DOCS_BY_ROLE = {
+                "chauffeur": ["permis", "cni", "certificat", "assurance"],
+                "proprietaire": ["cni", "certificat"],
+            }
+            role_types = REQUIRED_DOCS_BY_ROLE.get(user.role.value)
+            if role_types:
+                docs_result = await db.execute(
+                    select(Document).where(
+                        Document.utilisateur_id == user.id,
+                        Document.type_document.in_(role_types),
+                    )
+                )
+                all_docs = docs_result.scalars().all()
+                validated_types = {d.type_document.value if hasattr(d.type_document, 'value') else d.type_document for d in all_docs if d.statut == "valide"}
+                if set(role_types).issubset(validated_types):
+                    user.is_verified = True
+            else:
+                user.is_verified = True
     elif statut == "rejete":
         await notify_user(
             db,
             user_id=doc.utilisateur_id,
             titre="Document rejeté",
-            contenu=f"Votre document de type « {doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document} » a été rejeté. Veuillez recharger un document valide.",
+            contenu=f"Votre document de type « {doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document} » a été rejeté. Motif : {motif}",
             type_notif="document",
-            lien="/dashboard/chauffeur/documents",
+            lien=lien_documents,
         )
+        # Envoi email de rejet
+        user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))
+        user = user_result.scalar_one_or_none()
+        if user:
+            doc_label = doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document
+            send_document_rejection_email(
+                to_email=user.email,
+                user_name=user.nom_complet or "",
+                document_type=doc_label,
+                motif=motif,
+            )
 
     await db.flush()
     return {"message": f"Statut du document mis à jour : {statut}"}
@@ -247,7 +344,7 @@ async def update_document_statut(
 
 # ─── Gestion des incidents ─────────────────────────
 
-@router.get("/incidents")
+@router.get("/incidents", response_model=list[IncidentOut])
 async def list_all_incidents(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
@@ -259,23 +356,11 @@ async def list_all_incidents(
     Liste tous les incidents déclarés.
     Protégé : uniquement les administrateurs.
     """
-    from app.models.incident import Incident
-    query = select(Incident)
+    from sqlalchemy.orm import selectinload
+    query = select(Incident).options(selectinload(Incident.declarant))
     if statut:
         query = query.where(Incident.statut == statut)
     query = query.order_by(Incident.created_at.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
     incidents = result.scalars().all()
-    return [
-        {
-            "id": str(i.id),
-            "declarant_id": str(i.declarant_id),
-            "type_incident": i.type_incident.value if hasattr(i.type_incident, "value") else i.type_incident,
-            "date_incident": i.date_incident.isoformat() if i.date_incident else None,
-            "description": i.description,
-            "gravite": i.gravite.value if hasattr(i.gravite, "value") else i.gravite,
-            "statut": i.statut.value if hasattr(i.statut, "value") else i.statut,
-            "created_at": i.created_at.isoformat(),
-        }
-        for i in incidents
-    ]
+    return [IncidentOut.model_validate(i) for i in incidents]

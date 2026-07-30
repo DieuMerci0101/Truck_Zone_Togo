@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
 # ─── Helpers ────────────────────────────────────────
 
-def create_token(user_id: str, token_type: str = "access", role: str | None = None) -> str:
+def create_token(user_id: str, token_type: str = "access", role: str | None = None, is_verified: bool = False) -> str:
     if token_type == "access":
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     else:
@@ -34,6 +34,7 @@ def create_token(user_id: str, token_type: str = "access", role: str | None = No
         "sub": user_id,
         "type": token_type,
         "exp": expire,
+        "is_verified": is_verified,
     }
     if role:
         payload["role"] = role
@@ -82,6 +83,17 @@ async def require_admin(
         raise HTTPException(
             status_code=403,
             detail="Accès réservé aux administrateurs",
+        )
+    return current_user
+
+
+async def require_verified(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if not current_user.is_verified and current_user.role.value != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Veuillez d'abord soumettre vos documents pour validation",
         )
     return current_user
 
@@ -183,7 +195,7 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
         nom_complet=data.nom_complet,
         telephone=data.telephone,
         role=data.role,
-        is_verified=True,
+        is_verified=False,
         is_active=True,
     )
     db.add(user)
@@ -201,8 +213,8 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
 
-    access_token = create_token(str(user.id), "access", role=user.role.value)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value)
+    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified)
 
     return TokenResponse(
         access_token=access_token,
@@ -244,8 +256,8 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             detail="Ce compte n'est pas un administrateur",
         )
 
-    access_token = create_token(str(user.id), "access", role=user.role.value)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value)
+    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified)
 
     return TokenResponse(
         access_token=access_token,
@@ -418,8 +430,8 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Utilisateur non trouvé ou désactivé")
 
-    access_token = create_token(str(user.id), "access", role=user.role.value)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value)
+    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified)
 
     return TokenResponse(
         access_token=access_token,
@@ -429,6 +441,8 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
             "email": user.email,
             "nom_complet": user.nom_complet,
             "role": user.role.value,
+            "is_verified": user.is_verified,
+            "is_active": user.is_active,
         },
     )
 

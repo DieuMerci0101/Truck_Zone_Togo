@@ -112,6 +112,7 @@ class Urgence(str, enum.Enum):
 
 class StatutAssistance(str, enum.Enum):
     en_attente = "en_attente"
+    pris_en_charge = "pris_en_charge"
     assignee = "assignee"
     en_cours = "en_cours"
     terminee = "terminee"
