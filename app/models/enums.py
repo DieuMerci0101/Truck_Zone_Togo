@@ -52,6 +52,7 @@ class TypeCamion(str, enum.Enum):
 
 
 class EtatCamion(str, enum.Enum):
+    bon_etat = "bon_etat"
     excellent = "excellent"
     bon = "bon"
     use = "use"

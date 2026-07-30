@@ -90,9 +90,10 @@ class CamionCreate(BaseModel):
     annee: int = Field(..., ge=1900, le=2100)
     type_camion: str = Field(..., pattern=r"^(porteur|semi_remorque|benne|citerne|frigorifique|bache|plateau|benne_soulevable|autre)$")
     capacite_charge: float = Field(..., gt=0)
-    etat: str = Field(..., pattern=r"^(excellent|bon|use|en_reparation)$")
+    etat: str = Field(..., pattern=r"^(bon_etat|excellent|bon|use|en_reparation)$")
     description: Optional[str] = None
     is_public: bool = False
+    expires_at: Optional[datetime] = None
     nb_essieux: Optional[int] = Field(None, ge=2, le=12)
     carburant: Optional[str] = Field(None, pattern=r"^(diesel|essence|gaz|electrique|hybride)$")
     boite_vitesse: Optional[str] = Field(None, pattern=r"^(manuelle|automatique)$")
@@ -110,6 +111,7 @@ class CamionUpdate(BaseModel):
     etat: Optional[str] = None
     description: Optional[str] = None
     is_public: Optional[bool] = None
+    expires_at: Optional[datetime] = None
     nb_essieux: Optional[int] = Field(None, ge=2, le=12)
     carburant: Optional[str] = Field(None, pattern=r"^(diesel|essence|gaz|electrique|hybride)$")
     boite_vitesse: Optional[str] = Field(None, pattern=r"^(manuelle|automatique)$")
@@ -180,6 +182,10 @@ class CamionOut(BaseModel):
                 else:
                     setattr(data, "proprietaire_info", info)
         return data
+
+
+class CamionProlonger(BaseModel):
+    expires_at: datetime = Field(...)
 
 
 # ─── Offre de recrutement ──────────────────────────

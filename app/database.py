@@ -55,6 +55,7 @@ async def init_db():
         from sqlalchemy import text
         for stmt in [
             "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)",
+            "ALTER TYPE etat_camion ADD VALUE IF NOT EXISTS 'bon_etat'",
         ]:
             try:
                 await conn.execute(text(stmt))

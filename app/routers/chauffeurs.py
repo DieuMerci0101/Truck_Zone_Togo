@@ -21,7 +21,7 @@ from app.schemas.chauffeur import (
     ProfilChauffeurOut,
     ProfilChauffeurUpdate,
 )
-from app.schemas.proprietaire import CamionCreate, CamionOut, CamionUpdate, CamionPhotoOut
+from app.schemas.proprietaire import CamionCreate, CamionOut, CamionProlonger, CamionUpdate, CamionPhotoOut
 
 DOCUMENT_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "documents")
 DOCUMENT_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
@@ -33,6 +33,34 @@ UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 MAX_PHOTOS_PER_CAMION = 10
+
+CAMION_PUBLIABLES = {"bon_etat", "excellent"}
+
+
+def _valider_publication(etat: str, is_public: bool, expires_at: datetime | None = None) -> None:
+    if is_public and etat in ("en_reparation", "use"):
+        raise HTTPException(
+            status_code=400,
+            detail="Impossible de publier un camion en réparation ou usé. Il doit être en bon état.",
+        )
+    if is_public and etat in CAMION_PUBLIABLES:
+        if expires_at is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Un camion publié doit avoir une date d'expiration.",
+            )
+        if isinstance(expires_at, str):
+            try:
+                expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Format de date d'expiration invalide")
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=400,
+                detail="La date d'expiration doit être dans le futur.",
+            )
 
 
 @router.get("/", response_model=list[ProfilChauffeurOut])
@@ -266,6 +294,7 @@ async def create_camion(
     db: AsyncSession = Depends(get_db),
 ):
     profil = await _get_my_chauffeur_profile(current_user, db)
+    _valider_publication(data.etat, data.is_public, data.expires_at)
     camion = Camion(
         id=uuid.uuid4(),
         chauffeur_id=profil.id,
@@ -278,6 +307,7 @@ async def create_camion(
         etat=data.etat,
         description=data.description,
         is_public=data.is_public,
+        expires_at=data.expires_at,
     )
     db.add(camion)
     await db.flush()
@@ -310,6 +340,35 @@ async def update_camion(
 ):
     camion = await _verify_chauffeur_camion(current_user, camion_id, db)
     update_data = data.model_dump(exclude_unset=True)
+    new_etat = update_data.get("etat", camion.etat)
+    new_is_public = update_data.get("is_public", camion.is_public)
+
+    if new_is_public and new_etat in ("en_reparation", "use"):
+        raise HTTPException(
+            status_code=400,
+            detail="Action interdite : Seuls les véhicules en bon ou excellent état peuvent être publiés.",
+        )
+
+    if camion.is_public and "etat" in update_data and new_etat in ("en_reparation", "use"):
+        update_data["is_public"] = False
+        update_data["expires_at"] = None
+        new_is_public = False
+
+    if new_is_public and new_etat in CAMION_PUBLIABLES:
+        new_expires_at = update_data.get("expires_at", camion.expires_at)
+        if new_expires_at is None:
+            raise HTTPException(status_code=400, detail="Un camion publié doit avoir une date d'expiration.")
+        if isinstance(new_expires_at, str):
+            try:
+                new_expires_at = datetime.fromisoformat(new_expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Format de date d'expiration invalide")
+        if new_expires_at.tzinfo is None:
+            new_expires_at = new_expires_at.replace(tzinfo=timezone.utc)
+        if new_expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="La date d'expiration doit être dans le futur.")
+        update_data["expires_at"] = new_expires_at
+
     for field, value in update_data.items():
         setattr(camion, field, value)
     await db.flush()
@@ -466,8 +525,8 @@ async def toggle_publish_camion(
 ):
     camion = await _verify_chauffeur_camion(current_user, camion_id, db)
 
-    if not camion.is_public and camion.etat == "en_reparation":
-        raise HTTPException(status_code=400, detail="Impossible de publier un camion en réparation")
+    if not camion.is_public and camion.etat in ("en_reparation", "use"):
+        raise HTTPException(status_code=400, detail="Impossible de publier un camion en réparation ou usé")
 
     if body.expires_at and not camion.is_public:
         try:
@@ -484,3 +543,33 @@ async def toggle_publish_camion(
     camion.is_public = not camion.is_public
     await db.flush()
     return {"message": f"Camion {'publié' if camion.is_public else 'dépublié'}", "is_public": camion.is_public}
+
+
+@router.patch("/me/camions/{camion_id}/prolonger", response_model=CamionOut)
+async def prolonger_publication_camion(
+    camion_id: uuid.UUID,
+    data: CamionProlonger,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    camion = await _verify_chauffeur_camion(current_user, camion_id, db)
+    if camion.etat not in CAMION_PUBLIABLES:
+        raise HTTPException(status_code=400, detail="Impossible de prolonger : le camion n'est pas en bon état")
+
+    expires = data.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="La nouvelle date d'expiration doit être dans le futur")
+
+    camion.expires_at = expires
+    camion.is_public = True
+    await db.flush()
+    await db.refresh(camion)
+
+    result = await db.execute(
+        select(Camion)
+        .options(selectinload(Camion.photos))
+        .where(Camion.id == camion.id)
+    )
+    return result.scalar_one()
