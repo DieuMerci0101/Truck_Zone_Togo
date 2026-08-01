@@ -447,6 +447,7 @@ async def verify_mechanic(
                 to_email=profil.user.email,
                 user_name=profil.user.nom_complet or "",
                 motif=motif,
+                role="mecanicien",
             )
 
     await db.flush()
@@ -657,6 +658,7 @@ async def decide_verification(
             to_email=user.email,
             user_name=user.nom_complet or "",
             motif=motif,
+            role=role,
         )
         message = f"Compte de {user.nom_complet} rejeté"
 

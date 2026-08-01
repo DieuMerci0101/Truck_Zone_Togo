@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -54,12 +54,28 @@ class Settings(BaseSettings):
 
     # ==========================
     # SMTP
+    # Les variables MAIL_* (Render) et SMTP_* sont toutes acceptées.
     # ==========================
-    smtp_host: str = "smtp.gmail.com"
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    email_from: str = "TogoTruckConnect <noreply@togotruckconnect.com>"
+    smtp_host: str = Field(
+        default="smtp.gmail.com",
+        validation_alias=AliasChoices("smtp_host", "SMTP_HOST", "MAIL_SERVER", "MAIL_HOST"),
+    )
+    smtp_port: int = Field(
+        default=587,
+        validation_alias=AliasChoices("smtp_port", "SMTP_PORT", "MAIL_PORT"),
+    )
+    smtp_user: str = Field(
+        default="",
+        validation_alias=AliasChoices("smtp_user", "SMTP_USER", "SMTP_USERNAME", "MAIL_USERNAME", "MAIL_USER"),
+    )
+    smtp_password: str = Field(
+        default="",
+        validation_alias=AliasChoices("smtp_password", "SMTP_PASSWORD", "SMTP_PASS", "MAIL_PASSWORD", "MAIL_PASS"),
+    )
+    email_from: str = Field(
+        default="TogoTruckConnect <noreply@togotruckconnect.com>",
+        validation_alias=AliasChoices("email_from", "EMAIL_FROM", "MAIL_FROM", "MAIL_DEFAULT_SENDER"),
+    )
 
     # ==========================
     # MinIO

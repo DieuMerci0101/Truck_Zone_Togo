@@ -13,7 +13,7 @@ from app.models.chauffeur import ProfilChauffeur
 from app.models.camion import Camion
 from app.models.camion_photo import CamionPhoto
 from app.models.document import Document
-from app.models.enums import TypeDocument
+from app.models.enums import CategoriePermis, DisponibiliteChauffeur, TypeDocument
 from app.routers.auth import get_current_user
 from app.schemas.chauffeur import (
     DisponibiliteUpdate,
@@ -35,6 +35,47 @@ MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 MAX_PHOTOS_PER_CAMION = 10
 
 CAMION_PUBLIABLES = {"bon_etat", "excellent"}
+
+# Marqueur utilisé pour les profils créés paresseusement (bascule de disponibilité)
+# tant que le chauffeur n'a pas complété son formulaire. Ces profils incomplets
+# sont exclus de l'annuaire public pour ne pas polluer les résultats.
+PROFIL_INCOMPLET_MARQUEUR = "A_COMPLETER"
+
+
+async def _get_or_create_chauffeur_profil(
+    current_user: User,
+    db: AsyncSession,
+) -> ProfilChauffeur:
+    """
+    Retourne le profil chauffeur de l'utilisateur, et le crée s'il n'existe pas
+    (comptes créés avant toute saisie de formulaire). Corrige le bug
+    « Profil non trouvé » qui bloquait le changement de disponibilité.
+    Le chauffeur complète ensuite son profil (numéro de permis, etc.) via PUT /me.
+    """
+    result = await db.execute(
+        select(ProfilChauffeur).where(ProfilChauffeur.user_id == current_user.id)
+    )
+    profil = result.scalar_one_or_none()
+    if profil:
+        return profil
+
+    profil = ProfilChauffeur(
+        id=uuid.uuid4(),
+        user_id=current_user.id,
+        numero_permis=PROFIL_INCOMPLET_MARQUEUR,
+        categorie_permis=CategoriePermis.C,
+        annees_experience=0,
+        types_transport=[],
+        zones_circulation=[],
+        disponibilite=DisponibiliteChauffeur.disponible,
+        bio=None,
+        photo_url=None,
+    )
+    db.add(profil)
+    await db.flush()
+    await db.refresh(profil)
+    profil.user = current_user
+    return profil
 
 
 def _valider_publication(etat: str, is_public: bool, expires_at: datetime | None = None) -> None:
@@ -76,6 +117,7 @@ async def list_chauffeurs(
         select(ProfilChauffeur)
         .options(selectinload(ProfilChauffeur.user))
         .where(User.is_active == True)
+        .where(ProfilChauffeur.numero_permis != PROFIL_INCOMPLET_MARQUEUR)
     )
     if disponibilite:
         statut_map = {
@@ -100,12 +142,9 @@ async def get_my_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ProfilChauffeur).where(ProfilChauffeur.user_id == current_user.id)
-    )
-    profil = result.scalar_one_or_none()
-    if not profil:
-        raise HTTPException(status_code=404, detail="Profil chauffeur non trouvé")
+    profil = await _get_or_create_chauffeur_profil(current_user, db)
+    if profil.user is None:
+        profil.user = current_user
     return profil
 
 
@@ -158,12 +197,7 @@ async def update_my_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ProfilChauffeur).where(ProfilChauffeur.user_id == current_user.id)
-    )
-    profil = result.scalar_one_or_none()
-    if not profil:
-        raise HTTPException(status_code=404, detail="Profil non trouvé")
+    profil = await _get_or_create_chauffeur_profil(current_user, db)
 
     update_data = data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -180,12 +214,7 @@ async def update_disponibilite(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ProfilChauffeur).where(ProfilChauffeur.user_id == current_user.id)
-    )
-    profil = result.scalar_one_or_none()
-    if not profil:
-        raise HTTPException(status_code=404, detail="Profil non trouvé")
+    profil = await _get_or_create_chauffeur_profil(current_user, db)
 
     profil.disponibilite = data.disponibilite
     await db.flush()
