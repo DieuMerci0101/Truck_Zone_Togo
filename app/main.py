@@ -79,8 +79,10 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(chauffeurs.router)
+app.include_router(chauffeurs.alias_router)
 app.include_router(proprietaires.router)
 app.include_router(mecaniciens.router)
+app.include_router(mecaniciens.alias_router)
 app.include_router(conversations.router)
 app.include_router(incidents.router)
 app.include_router(admin.router)

@@ -25,6 +25,9 @@ from app.schemas.mecanicien import (
 
 router = APIRouter(prefix="/api/mecaniciens", tags=["Mécaniciens"])
 
+# Alias compatible anglais (API partenaires)
+alias_router = APIRouter(prefix="/api/mechanics", tags=["Mechanics (alias)"])
+
 PROOF_UPLOAD_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "uploads",
@@ -165,6 +168,7 @@ async def update_my_position(
 # ─── Vérification du mécanicien (justificatif) ──────
 
 @router.post("/upload-proof", status_code=201)
+@alias_router.post("/upload-proof", status_code=201)
 async def upload_proof(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
@@ -206,6 +210,16 @@ async def upload_proof(
     from app.utils.verification import set_verification_status, PENDING_APPROVAL
     set_verification_status(current_user, PENDING_APPROVAL)
     await db.flush()
+
+    # Informe les administrateurs qu'un justificatif attend leur examen
+    from app.utils.notifications import notify_all_admins
+    await notify_all_admins(
+        db,
+        titre="Nouveau justificatif à vérifier",
+        contenu=f"{current_user.nom_complet} a soumis son justificatif mécanicien. Il attend votre validation.",
+        type_notif="document",
+        lien="/dashboard/admin/verifications",
+    )
 
     return {
         "message": "Votre document a été soumis avec succès. Votre compte est actuellement en attente de confirmation par l'administrateur.",
@@ -274,6 +288,24 @@ async def create_assistance(
     await db.flush()
     await db.refresh(assistance)
     assistance.demandeur = current_user
+
+    from app.utils.notifications import notify_all_admins, notify_user
+    await notify_all_admins(
+        db,
+        titre="Nouvelle demande d'assistance",
+        contenu=f"{current_user.nom_complet} demande une assistance de type « {data.type_panne} » (urgence « {data.urgence} »).",
+        type_notif="assistance",
+        lien="/dashboard/admin/assistance",
+    )
+    await notify_user(
+        db,
+        user_id=current_user.id,
+        titre="Demande d'assistance envoyée",
+        contenu=f"Votre demande d'assistance de type « {data.type_panne} » a été transmise aux administrateurs et mécaniciens disponibles.",
+        type_notif="assistance",
+        lien="/dashboard/chauffeur/assistance",
+    )
+
     return _assistance_out(assistance)
 
 

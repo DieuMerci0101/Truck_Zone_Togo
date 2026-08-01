@@ -139,6 +139,17 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                     )
                     sender = sender_result.scalar_one_or_none()
 
+                    # Notification pour les autres participants
+                    from app.routers.conversations import _notifier_autres_participants
+                    await _notifier_autres_participants(
+                        conversation_id,
+                        user_id,
+                        sender.nom_complet if sender else "Utilisateur",
+                        contenu,
+                        db,
+                        audio=(message_type == "audio"),
+                    )
+
                     await db.commit()
 
                 sender_nom = sender.nom_complet if sender else None

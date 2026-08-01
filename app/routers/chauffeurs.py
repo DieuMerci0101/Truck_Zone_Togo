@@ -75,14 +75,22 @@ async def list_chauffeurs(
     query = (
         select(ProfilChauffeur)
         .options(selectinload(ProfilChauffeur.user))
+        .where(User.is_active == True)
     )
     if disponibilite:
-        query = query.where(ProfilChauffeur.disponibilite == disponibilite)
+        statut_map = {
+            "available": "disponible",
+            "on_mission": "en_mission",
+            "unavailable": "indisponible",
+        }
+        query = query.where(
+            ProfilChauffeur.disponibilite == statut_map.get(disponibilite, disponibilite)
+        )
     if categorie_permis:
         query = query.where(ProfilChauffeur.categorie_permis == categorie_permis)
     if experience_min:
         query = query.where(ProfilChauffeur.annees_experience >= experience_min)
-    query = query.offset(skip).limit(limit)
+    query = query.order_by(ProfilChauffeur.created_at.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -166,6 +174,7 @@ async def update_my_profile(
 
 
 @router.put("/me/statut")
+@router.patch("/me/statut")
 async def update_disponibilite(
     data: DisponibiliteUpdate,
     current_user: User = Depends(get_current_user),
@@ -579,3 +588,18 @@ async def prolonger_publication_camion(
         .where(Camion.id == camion.id)
     )
     return result.scalar_one()
+
+
+# ─── Alias public (API partenaires / clients) ────────
+
+alias_router = APIRouter(prefix="/api/drivers", tags=["Chauffeurs (alias)"])
+
+
+@alias_router.put("/availability")
+@alias_router.patch("/availability")
+async def update_availability_alias(
+    data: DisponibiliteUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await update_disponibilite(data, current_user, db)

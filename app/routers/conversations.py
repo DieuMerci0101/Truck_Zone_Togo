@@ -73,6 +73,39 @@ async def _fetch_participants(
     return out
 
 
+async def _notifier_autres_participants(
+    conversation_id: uuid.UUID,
+    expediteur_id: uuid.UUID,
+    expediteur_nom: str,
+    contenu: str,
+    db: AsyncSession,
+    audio: bool = False,
+) -> None:
+    """Crée une notification pour chaque autre participant de la conversation."""
+    from app.utils.notifications import notify_user
+
+    result = await db.execute(
+        select(ConversationParticipant).where(
+            ConversationParticipant.conversation_id == conversation_id,
+            ConversationParticipant.user_id != expediteur_id,
+        )
+    )
+    destinataires = [p.user_id for p in result.scalars().all()]
+    if not destinataires:
+        return
+    preview = contenu.strip()[:100] if contenu and contenu.strip() else None
+    extrait = preview or ("Message vocal" if audio else "Nouveau message")
+    for uid in destinataires:
+        await notify_user(
+            db,
+            user_id=uid,
+            titre="Nouveau message",
+            contenu=f"{expediteur_nom} : {extrait}",
+            type_notif="message",
+            lien=f"/dashboard/chat?conv={conversation_id}",
+        )
+
+
 @router.get("/", response_model=list[ConversationOut])
 async def list_conversations(
     skip: int = Query(0, ge=0),
@@ -167,6 +200,13 @@ async def create_conversation(
                 )
                 existing_conv = conv_update.scalar_one()
                 existing_conv.updated_at = now
+                await _notifier_autres_participants(
+                    existing_conv.id,
+                    current_user.id,
+                    current_user.nom_complet,
+                    data.premier_message,
+                    db,
+                )
                 await db.commit()
                 await db.refresh(existing_conv)
                 participants = await _fetch_participants(existing_conv.id, db)
@@ -209,6 +249,13 @@ async def create_conversation(
         )
         db.add(msg)
         conv.updated_at = datetime.now(timezone.utc)
+        await _notifier_autres_participants(
+            conv.id,
+            current_user.id,
+            current_user.nom_complet,
+            data.premier_message,
+            db,
+        )
 
     await db.commit()
     await db.refresh(conv)
@@ -318,6 +365,13 @@ async def send_message(
 
     await db.flush()
     await db.refresh(msg)
+    await _notifier_autres_participants(
+        conversation_id,
+        current_user.id,
+        current_user.nom_complet,
+        data.contenu,
+        db,
+    )
     # Re-fetch with expediteur relation loaded
     result = await db.execute(
         select(Message).where(Message.id == msg.id).options(selectinload(Message.expediteur))
@@ -378,6 +432,14 @@ async def send_audio_message(
 
     await db.flush()
     await db.refresh(msg)
+    await _notifier_autres_participants(
+        conversation_id,
+        current_user.id,
+        current_user.nom_complet,
+        contenu or "",
+        db,
+        audio=True,
+    )
     result = await db.execute(
         select(Message).where(Message.id == msg.id).options(selectinload(Message.expediteur))
     )
@@ -403,6 +465,20 @@ async def mark_conversation_read(
     messages = result.scalars().all()
     for m in messages:
         m.lu = True
+
+    # Marque les notifications "message" liées à cette conversation comme lues
+    from sqlalchemy import update as sa_update
+    from app.models.notification import Notification
+    await db.execute(
+        sa_update(Notification)
+        .where(
+            Notification.destinataire_id == current_user.id,
+            Notification.type == "message",
+            Notification.lu == False,
+            Notification.lien.contains(str(conversation_id)),
+        )
+        .values(lu=True)
+    )
     await db.flush()
     return {
         "message": "Messages marqués comme lus",

@@ -47,6 +47,9 @@ class UserInfo(BaseModel):
     telephone: str
     role: str
     photo_profil: Optional[str] = None
+    is_active: bool = True
+    is_verified: bool = True
+    verification_status: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -69,4 +72,17 @@ class ProfilChauffeurOut(BaseModel):
 
 
 class DisponibiliteUpdate(BaseModel):
-    disponibilite: str = Field(..., pattern=r"^(disponible|en_mission|indisponible)$")
+    disponibilite: str = Field(
+        ...,
+        pattern=r"^(available|on_mission|unavailable|disponible|en_mission|indisponible)$",
+    )
+
+    @field_validator("disponibilite")
+    @classmethod
+    def normaliser_disponibilite(cls, v: str) -> str:
+        mapping = {
+            "available": "disponible",
+            "on_mission": "en_mission",
+            "unavailable": "indisponible",
+        }
+        return mapping.get(v, v)
