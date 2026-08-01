@@ -264,6 +264,7 @@ async def update_document_statut(
     from app.models.document import Document
     from app.utils.notifications import notify_user
     from app.utils.email import send_document_rejection_email
+    from app.utils.verification import set_verification_status, APPROVED, REJECTED, REQUIRED_DOCS_BY_ROLE
     from sqlalchemy.orm import selectinload
 
     statut = body.statut
@@ -299,10 +300,6 @@ async def update_document_statut(
         user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))
         user = user_result.scalar_one_or_none()
         if user:
-            REQUIRED_DOCS_BY_ROLE = {
-                "chauffeur": ["permis", "cni", "certificat", "assurance"],
-                "proprietaire": ["cni", "certificat"],
-            }
             role_types = REQUIRED_DOCS_BY_ROLE.get(user.role.value)
             if role_types:
                 docs_result = await db.execute(
@@ -314,9 +311,9 @@ async def update_document_statut(
                 all_docs = docs_result.scalars().all()
                 validated_types = {d.type_document.value if hasattr(d.type_document, 'value') else d.type_document for d in all_docs if d.statut == "valide"}
                 if set(role_types).issubset(validated_types):
-                    user.is_verified = True
+                    set_verification_status(user, APPROVED)
             else:
-                user.is_verified = True
+                set_verification_status(user, APPROVED)
     elif statut == "rejete":
         await notify_user(
             db,
@@ -330,6 +327,8 @@ async def update_document_statut(
         user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))
         user = user_result.scalar_one_or_none()
         if user:
+            # Synchronise le statut global du compte
+            set_verification_status(user, REJECTED, motif=motif)
             doc_label = doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document
             send_document_rejection_email(
                 to_email=user.email,
@@ -400,6 +399,8 @@ async def verify_mechanic(
     """
     from sqlalchemy.orm import selectinload
     from app.utils.notifications import notify_user
+    from app.utils.email import send_verification_rejection_email
+    from app.utils.verification import set_verification_status, APPROVED, REJECTED
 
     result = await db.execute(
         select(ProfilMecanicien)
@@ -410,13 +411,17 @@ async def verify_mechanic(
     if not profil:
         raise HTTPException(status_code=404, detail="Mécanicien non trouvé")
 
+    motif = body.motif.strip() if body.motif else None
+    if body.statut == REJECTED and not motif:
+        raise HTTPException(status_code=422, detail="Un motif de rejet est obligatoire")
+
     profil.verification_status = body.statut
     lien = "/dashboard/mecanicien"
 
     if body.statut == "approved":
         profil.verification_status = "approved"
         if profil.user:
-            profil.user.is_verified = True
+            set_verification_status(profil.user, APPROVED)
             await notify_user(
                 db,
                 user_id=profil.user_id,
@@ -427,8 +432,8 @@ async def verify_mechanic(
             )
     else:
         profil.verification_status = "rejected"
-        motif = body.motif or "Justificatif non conforme"
         if profil.user:
+            set_verification_status(profil.user, REJECTED, motif=motif)
             await notify_user(
                 db,
                 user_id=profil.user_id,
@@ -437,11 +442,217 @@ async def verify_mechanic(
                 type_notif="document",
                 lien=lien,
             )
+            send_verification_rejection_email(
+                to_email=profil.user.email,
+                user_name=profil.user.nom_complet or "",
+                motif=motif,
+            )
 
     await db.flush()
     return {
         "message": f"Vérification du mécanicien : {body.statut}",
         "verification_status": profil.verification_status,
+    }
+
+
+# ─── Vérification unifiée des comptes (tous rôles) ──
+
+
+class VerificationDecision(BaseModel):
+    """Décision admin : approuver ou rejeter le dossier d'inscription d'un utilisateur."""
+    statut: str = Field(..., pattern=r"^(approved|rejected)$")
+    motif: str | None = None
+
+
+@router.get("/verifications")
+async def list_verifications(
+    statut: str | None = None,
+    role: str | None = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Liste les dossiers d'inscription avec leurs documents pour l'espace admin.
+    Protégé : uniquement les administrateurs.
+    """
+    from app.utils.verification import REQUIRED_DOCS_BY_ROLE
+    from app.models.document import Document
+
+    query = select(User).where(User.role != "admin")
+    if statut:
+        query = query.where(User.verification_status == statut)
+    if role:
+        query = query.where(User.role == role)
+    query = query.order_by(User.created_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(query)
+    users = result.scalars().all()
+
+    user_ids = [u.id for u in users]
+    docs_by_user: dict[str, list[dict]] = {}
+    if user_ids:
+        docs_result = await db.execute(
+            select(Document)
+            .where(Document.utilisateur_id.in_(user_ids))
+            .order_by(Document.created_at.desc())
+        )
+        for d in docs_result.scalars().all():
+            docs_by_user.setdefault(str(d.utilisateur_id), []).append(
+                {
+                    "id": str(d.id),
+                    "type_document": d.type_document.value if hasattr(d.type_document, "value") else d.type_document,
+                    "fichier_url": d.fichier_url,
+                    "statut": d.statut.value if hasattr(d.statut, "value") else d.statut,
+                    "commentaire_admin": d.commentaire_admin,
+                    "validated_at": d.validated_at.isoformat() if d.validated_at else None,
+                    "created_at": d.created_at.isoformat(),
+                }
+            )
+
+    mechanic_user_ids = [u.id for u in users if u.role.value == "mecanicien"]
+    proof_by_user: dict[str, dict] = {}
+    if mechanic_user_ids:
+        profils_result = await db.execute(
+            select(ProfilMecanicien).where(ProfilMecanicien.user_id.in_(mechanic_user_ids))
+        )
+        for p in profils_result.scalars().all():
+            proof_by_user[str(p.user_id)] = {
+                "id": str(p.id),
+                "type_document": "justificatif",
+                "fichier_url": p.proof_document_url,
+                "statut": p.verification_status,
+                "commentaire_admin": None,
+                "validated_at": None,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+
+    items = []
+    for u in users:
+        required = REQUIRED_DOCS_BY_ROLE.get(u.role.value, [])
+        docs = docs_by_user.get(str(u.id), [])
+        if u.role.value == "mecanicien":
+            proof = proof_by_user.get(str(u.id))
+            docs = [proof] if proof and proof.get("fichier_url") else []
+        submitted = {d["type_document"] for d in docs}
+        items.append(
+            {
+                "user_id": str(u.id),
+                "nom_complet": u.nom_complet,
+                "email": u.email,
+                "telephone": u.telephone,
+                "role": u.role.value,
+                "is_verified": u.is_verified,
+                "verification_status": u.verification_status,
+                "verification_reject_motif": u.verification_reject_motif,
+                "required_documents": required,
+                "missing_documents": [t for t in required if t not in submitted],
+                "documents": docs,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+        )
+    return items
+
+
+@router.put("/verifications/{user_id}")
+async def decide_verification(
+    user_id: uuid.UUID,
+    body: VerificationDecision,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Approuve ou rejette le dossier d'inscription d'un utilisateur (tous rôles).
+    - [VALIDER] : statut -> approved / is_verified = True, les documents sont marqués validés.
+    - [REJETER] : motif obligatoire, statut -> rejected, notification + email avec le motif.
+    Protégé : uniquement les administrateurs.
+    """
+    from app.utils.notifications import notify_user
+    from app.utils.email import send_verification_rejection_email
+    from app.utils.verification import set_verification_status, APPROVED, REJECTED
+
+    motif = body.motif.strip() if body.motif else None
+    if body.statut == REJECTED and not motif:
+        raise HTTPException(status_code=422, detail="Un motif de rejet est obligatoire")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+    if user.role.value == "admin":
+        raise HTTPException(status_code=400, detail="Impossible de vérifier un compte administrateur")
+
+    role = user.role.value
+
+    if body.statut == APPROVED:
+        set_verification_status(user, APPROVED)
+        if role in ("chauffeur", "proprietaire"):
+            now = datetime.now(timezone.utc)
+            docs_result = await db.execute(
+                select(Document).where(
+                    Document.utilisateur_id == user.id,
+                    Document.statut != "valide",
+                )
+            )
+            for d in docs_result.scalars().all():
+                d.statut = "valide"
+                d.commentaire_admin = None
+                d.validated_at = now
+        elif role == "mecanicien":
+            p_result = await db.execute(
+                select(ProfilMecanicien).where(ProfilMecanicien.user_id == user.id)
+            )
+            profil = p_result.scalar_one_or_none()
+            if profil:
+                profil.verification_status = "approved"
+        await notify_user(
+            db,
+            user_id=user.id,
+            titre="Compte vérifié",
+            contenu="Votre dossier d'inscription a été validé. Vous avez maintenant un accès complet à la plateforme.",
+            type_notif="document",
+            lien=f"/dashboard/{role}",
+        )
+        message = f"Compte de {user.nom_complet} validé avec succès"
+    else:
+        set_verification_status(user, REJECTED, motif=motif)
+        if role in ("chauffeur", "proprietaire"):
+            docs_result = await db.execute(
+                select(Document).where(
+                    Document.utilisateur_id == user.id,
+                    Document.statut != "valide",
+                )
+            )
+            for d in docs_result.scalars().all():
+                d.statut = "rejete"
+                d.commentaire_admin = motif
+        elif role == "mecanicien":
+            p_result = await db.execute(
+                select(ProfilMecanicien).where(ProfilMecanicien.user_id == user.id)
+            )
+            profil = p_result.scalar_one_or_none()
+            if profil:
+                profil.verification_status = "rejected"
+        await notify_user(
+            db,
+            user_id=user.id,
+            titre="Dossier d'inscription rejeté",
+            contenu=f"Votre dossier d'inscription nécessite des corrections. Motif : {motif}",
+            type_notif="document",
+            lien=f"/dashboard/{role}",
+        )
+        send_verification_rejection_email(
+            to_email=user.email,
+            user_name=user.nom_complet or "",
+            motif=motif,
+        )
+        message = f"Compte de {user.nom_complet} rejeté"
+
+    await db.flush()
+    return {
+        "message": message,
+        "verification_status": user.verification_status,
+        "is_verified": user.is_verified,
     }
 
 

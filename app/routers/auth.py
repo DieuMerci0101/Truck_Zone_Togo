@@ -14,9 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
-from app.models.mecanicien import ProfilMecanicien
 from app.models.otp import OTPReset
 from app.utils.email import send_otp_email
+from app.utils.verification import PENDING_UPLOAD
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
 # ─── Helpers ────────────────────────────────────────
 
-def create_token(user_id: str, token_type: str = "access", role: str | None = None, is_verified: bool = False) -> str:
+def create_token(user_id: str, token_type: str = "access", role: str | None = None, is_verified: bool = False, verification_status: str | None = None) -> str:
     if token_type == "access":
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     else:
@@ -36,6 +36,7 @@ def create_token(user_id: str, token_type: str = "access", role: str | None = No
         "type": token_type,
         "exp": expire,
         "is_verified": is_verified,
+        "verification_status": verification_status or PENDING_UPLOAD,
     }
     if role:
         payload["role"] = role
@@ -47,17 +48,6 @@ def decode_token(token: str) -> dict:
         return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError:
         raise HTTPException(status_code=401, detail="Token invalide ou expiré")
-
-
-async def _mechanic_verification_status(user: User, db: AsyncSession) -> str | None:
-    """Renvoie le verification_status pour un mécanicien, sinon None."""
-    if user.role.value != "mecanicien":
-        return None
-    result = await db.execute(
-        select(ProfilMecanicien).where(ProfilMecanicien.user_id == user.id)
-    )
-    profil = result.scalar_one_or_none()
-    return profil.verification_status if profil else "pending_upload"
 
 
 async def get_current_user(
@@ -225,8 +215,8 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
 
-    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified)
+    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
 
     return TokenResponse(
         access_token=access_token,
@@ -244,7 +234,8 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "bio": user.bio,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
-            "verification_status": await _mechanic_verification_status(user, db),
+            "verification_status": user.verification_status,
+            "verification_reject_motif": user.verification_reject_motif,
             "created_at": str(user.created_at),
         },
     )
@@ -269,8 +260,8 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             detail="Ce compte n'est pas un administrateur",
         )
 
-    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified)
+    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
 
     return TokenResponse(
         access_token=access_token,
@@ -288,6 +279,7 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "bio": user.bio,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
+            "verification_status": user.verification_status,
             "created_at": str(user.created_at),
         },
     )
@@ -443,8 +435,8 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Utilisateur non trouvé ou désactivé")
 
-    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified)
+    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
+    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
 
     return TokenResponse(
         access_token=access_token,
@@ -456,6 +448,7 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
             "role": user.role.value,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
+            "verification_status": user.verification_status,
         },
     )
 

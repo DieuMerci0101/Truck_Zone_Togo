@@ -42,6 +42,19 @@ class User(TimestampMixin, Base):
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Vérification du compte (tous rôles) :
+    # pending_upload | pending_approval | approved | rejected
+    verification_status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="pending_upload",
+        server_default="pending_upload",
+    )
+    # Motif enregistré lors d'un rejet par l'administrateur
+    verification_reject_motif: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None
+    )
+
     # Relationships
     profil_chauffeur: Mapped["ProfilChauffeur | None"] = relationship(
         "ProfilChauffeur", back_populates="user", uselist=False

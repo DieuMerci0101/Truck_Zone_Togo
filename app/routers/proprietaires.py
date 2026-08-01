@@ -926,11 +926,11 @@ async def upload_document(
 
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_DOC_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Format non supporté (PDF, JPG, PNG uniquement)")
+        raise HTTPException(status_code=400, detail="Format non supporté. Veuillez importer une image JPG/PNG ou un fichier PDF.")
 
     content = await file.read()
     if len(content) > MAX_DOC_SIZE:
-        raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 10 Mo")
+        raise HTTPException(status_code=400, detail="Le fichier est trop lourd. La taille maximale autorisée est de 10 Mo.")
 
     os.makedirs(UPLOAD_DIR_DOCS, exist_ok=True)
     filename = f"{uuid.uuid4().hex}{ext}"
@@ -955,6 +955,12 @@ async def upload_document(
     )
     db.add(doc)
     await db.flush()
+
+    # Dès que la totalité des documents requis est soumise, le compte passe
+    # automatiquement en "pending_approval" (en attente de validation admin).
+    from app.utils.verification import sync_verification_after_upload
+    await sync_verification_after_upload(db, current_user)
+
     await db.refresh(doc)
     return {
         "id": str(doc.id),

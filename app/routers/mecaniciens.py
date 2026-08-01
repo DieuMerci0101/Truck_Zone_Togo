@@ -188,11 +188,11 @@ async def upload_proof(
 
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in PROOF_ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Format non supporté (PDF, JPG, JPEG, PNG uniquement)")
+        raise HTTPException(status_code=400, detail="Format non supporté. Veuillez importer une image JPG/PNG ou un fichier PDF.")
 
     content = await file.read()
     if len(content) > PROOF_MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 10 Mo")
+        raise HTTPException(status_code=400, detail="Le fichier est trop lourd. La taille maximale autorisée est de 10 Mo.")
 
     os.makedirs(PROOF_UPLOAD_DIR, exist_ok=True)
     filename = f"{uuid.uuid4().hex}{ext}"
@@ -202,6 +202,9 @@ async def upload_proof(
 
     profil.proof_document_url = f"/uploads/justificatifs/{filename}"
     profil.verification_status = "pending_approval"
+    # Synchronise aussi le statut global du compte
+    from app.utils.verification import set_verification_status, PENDING_APPROVAL
+    set_verification_status(current_user, PENDING_APPROVAL)
     await db.flush()
 
     return {
