@@ -476,6 +476,8 @@ async def list_verifications(
 ):
     """
     Liste les dossiers d'inscription avec leurs documents pour l'espace admin.
+    Le paramètre `statut` accepte un ou plusieurs statuts séparés par des virgules
+    (ex. "pending_upload,pending_approval" pour le filtre "En attente").
     Protégé : uniquement les administrateurs.
     """
     from app.utils.verification import REQUIRED_DOCS_BY_ROLE
@@ -483,7 +485,9 @@ async def list_verifications(
 
     query = select(User).where(User.role != "admin")
     if statut:
-        query = query.where(User.verification_status == statut)
+        statuts = [s.strip() for s in statut.split(",") if s.strip()]
+        if statuts:
+            query = query.where(User.verification_status.in_(statuts))
     if role:
         query = query.where(User.role == role)
     query = query.order_by(User.created_at.desc()).offset(skip).limit(limit)
@@ -536,12 +540,17 @@ async def list_verifications(
             proof = proof_by_user.get(str(u.id))
             docs = [proof] if proof and proof.get("fichier_url") else []
         submitted = {d["type_document"] for d in docs}
+        submitted_dates = [d.get("created_at") for d in docs if d.get("created_at")]
+        soumis_le = max(submitted_dates) if submitted_dates else (
+            u.created_at.isoformat() if u.created_at else None
+        )
         items.append(
             {
                 "user_id": str(u.id),
                 "nom_complet": u.nom_complet,
                 "email": u.email,
                 "telephone": u.telephone,
+                "photo_profil": u.photo_profil,
                 "role": u.role.value,
                 "is_verified": u.is_verified,
                 "verification_status": u.verification_status,
@@ -550,6 +559,7 @@ async def list_verifications(
                 "missing_documents": [t for t in required if t not in submitted],
                 "documents": docs,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
+                "soumis_le": soumis_le,
             }
         )
     return items
@@ -571,6 +581,7 @@ async def decide_verification(
     from app.utils.notifications import notify_user
     from app.utils.email import send_verification_rejection_email
     from app.utils.verification import set_verification_status, APPROVED, REJECTED
+    from app.models.document import Document
 
     motif = body.motif.strip() if body.motif else None
     if body.statut == REJECTED and not motif:

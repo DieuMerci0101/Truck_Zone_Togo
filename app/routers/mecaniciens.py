@@ -244,7 +244,7 @@ async def upload_proof(
         titre="Nouveau justificatif à vérifier",
         contenu=f"{current_user.nom_complet} a soumis son justificatif mécanicien. Il attend votre validation.",
         type_notif="document",
-        lien="/dashboard/admin/verifications",
+        lien="/dashboard/admin/documents",
     )
 
     return {
