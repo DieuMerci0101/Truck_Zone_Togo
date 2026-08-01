@@ -64,7 +64,7 @@ app = FastAPI(
 )
 
 ALLOWED_ORIGINS = [
-    "http://localhost:3000",
+    "https://frontend-truck-zone-togo.vercel.app",
     
     "https://truck-zone-togo.onrender.com",
 ]
