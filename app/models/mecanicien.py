@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, ForeignKey, Integer, String, Text  # type: ignore
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func  # type: ignore
 from sqlalchemy.dialects.postgresql import ARRAY  # type: ignore
 from sqlalchemy.orm import Mapped, mapped_column, relationship  # type: ignore
 from app.models.base import Base, TimestampMixin
@@ -43,6 +44,18 @@ class ProfilMecanicien(TimestampMixin, Base):
         default=DisponibiliteMecanicien.disponible,
     )
     localisation = mapped_column(String(100), nullable=False, default="POINT(0 0)")
+
+    # Géolocalisation temps réel (activée explicitement par le mécanicien).
+    position_active: Mapped[bool] = mapped_column(
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    position_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+    )
 
     rayon_intervention: Mapped[int] = mapped_column(Integer, nullable=False)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)

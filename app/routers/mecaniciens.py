@@ -19,6 +19,7 @@ from app.schemas.mecanicien import (
     AssistanceCreate,
     AssistanceOut,
     AssistanceUpdateStatut,
+    MecanicienPositionOut,
     ProfilMecanicienOut,
     ProfilMecanicienUpdate,
 )
@@ -64,6 +65,11 @@ def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 class MecanicienPositionUpdate(BaseModel):
     localisation_lat: float = Field(..., ge=-90, le=90)
     localisation_lng: float = Field(..., ge=-180, le=180)
+
+
+class MecanicienActivationRequest(BaseModel):
+    localisation_lat: float | None = Field(None, ge=-90, le=90)
+    localisation_lng: float | None = Field(None, ge=-180, le=180)
 
 
 def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
@@ -184,6 +190,9 @@ async def update_my_position(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Met à jour la position du mécanicien connecté et l'active (position temps réel).
+    """
     result = await db.execute(
         select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
     )
@@ -192,8 +201,139 @@ async def update_my_position(
         raise HTTPException(status_code=404, detail="Profil mécanicien non trouvé")
 
     profil.localisation = _localisation_wkt(data.localisation_lat, data.localisation_lng)
+    profil.position_active = True
+    profil.position_updated_at = datetime.now(timezone.utc)
     await db.flush()
-    return {"message": "Position mise à jour", "localisation_lat": data.localisation_lat, "localisation_lng": data.localisation_lng}
+    return {
+        "message": "Position mise à jour",
+        "localisation_lat": data.localisation_lat,
+        "localisation_lng": data.localisation_lng,
+        "position_active": True,
+    }
+
+
+async def _get_mecanicien_profil_or_404(current_user: User, db: AsyncSession) -> ProfilMecanicien:
+    result = await db.execute(
+        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
+    )
+    profil = result.scalar_one_or_none()
+    if not profil:
+        raise HTTPException(status_code=404, detail="Profil mécanicien non trouvé")
+    return profil
+
+
+@router.put("/localisation/activer")
+@alias_router.post("/location/activate")
+async def activer_position(
+    data: MecanicienActivationRequest | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Active la position temps réel du mécanicien (optionnellement avec des coordonnées).
+    """
+    profil = await _get_mecanicien_profil_or_404(current_user, db)
+
+    if data and data.localisation_lat is not None and data.localisation_lng is not None:
+        profil.localisation = _localisation_wkt(data.localisation_lat, data.localisation_lng)
+
+    p_lat, p_lng = _parse_wkt(profil.localisation)
+    if p_lat == 0.0 and p_lng == 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail="Aucune position enregistrée. Fournissez une position ou localisez-vous d'abord.",
+        )
+
+    profil.position_active = True
+    profil.position_updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    return {"message": "Position activée — vous êtes visible par les chauffeurs à proximité", "position_active": True}
+
+
+@router.put("/localisation/desactiver")
+@alias_router.post("/location/deactivate")
+async def desactiver_position(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Désactive la position temps réel du mécanicien."""
+    profil = await _get_mecanicien_profil_or_404(current_user, db)
+    profil.position_active = False
+    await db.flush()
+    return {"message": "Position désactivée", "position_active": False}
+
+
+@router.get("/actifs", response_model=list[MecanicienPositionOut])
+async def get_mecaniciens_actifs(
+    lat: float | None = Query(None, ge=-90, le=90),
+    lng: float | None = Query(None, ge=-180, le=180),
+    rayon_km: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Liste tous les mécaniciens ayant activé leur position temps réel.
+    Si lat/lng sont fournis, trie par distance croissante (optionnellement filtrés par rayon).
+    """
+    result = await db.execute(
+        select(ProfilMecanicien)
+        .options(selectinload(ProfilMecanicien.user))
+        .where(ProfilMecanicien.position_active == True)
+    )
+    profiles = result.scalars().all()
+
+    items: list[MecanicienPositionOut] = []
+    for p in profiles:
+        p_lat, p_lng = _parse_wkt(p.localisation)
+        if p_lat == 0.0 and p_lng == 0.0:
+            continue
+        dist = None
+        if lat is not None and lng is not None:
+            dist = round(_haversine(lat, lng, p_lat, p_lng), 1)
+            if rayon_km and dist > rayon_km:
+                continue
+        user = p.user
+        items.append(
+            MecanicienPositionOut(
+                id=p.id,
+                nom_complet=user.nom_complet if user else "",
+                telephone=user.telephone if user else None,
+                photo_url=user.photo_profil if user else None,
+                specialites=p.specialites or [],
+                disponibilite=p.disponibilite.value if hasattr(p.disponibilite, "value") else p.disponibilite,
+                localisation_lat=p_lat,
+                localisation_lng=p_lng,
+                position_active=bool(p.position_active),
+                position_updated_at=p.position_updated_at,
+                distance_km=dist,
+            )
+        )
+
+    if lat is not None and lng is not None:
+        items.sort(key=lambda x: (x.distance_km is None, x.distance_km if x.distance_km is not None else 0))
+    return items
+
+
+@alias_router.patch("/location")
+async def update_location_alias(
+    data: MecanicienPositionUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Alias API partenaires : PATCH /api/mechanics/location."""
+    return await update_my_position(data, current_user, db)
+
+
+@alias_router.get("/locations", response_model=list[MecanicienPositionOut])
+async def list_mechanics_locations_alias(
+    lat: float | None = Query(None, ge=-90, le=90),
+    lng: float | None = Query(None, ge=-180, le=180),
+    rayon_km: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Alias API partenaires : GET /api/mechanics/locations."""
+    return await get_mecaniciens_actifs(lat=lat, lng=lng, rayon_km=rayon_km, current_user=current_user, db=db)
 
 
 # ─── Vérification du mécanicien (justificatif) ──────

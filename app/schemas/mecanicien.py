@@ -59,6 +59,8 @@ class ProfilMecanicienOut(BaseModel):
     photo_url: Optional[str] = None
     proof_document_url: Optional[str] = None
     verification_status: str = "pending_upload"
+    position_active: bool = False
+    position_updated_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -100,6 +102,21 @@ class DemandeurInfo(BaseModel):
     nom_complet: str
     photo_profil: str | None = None
     role: str
+
+
+class MecanicienPositionOut(BaseModel):
+    """Mécanicien avec position active, visible par les chauffeurs/propriétaires."""
+    id: uuid.UUID
+    nom_complet: str = ""
+    telephone: Optional[str] = None
+    photo_url: Optional[str] = None
+    specialites: list[str] = []
+    disponibilite: str = "disponible"
+    localisation_lat: Optional[float] = None
+    localisation_lng: Optional[float] = None
+    position_active: bool = False
+    position_updated_at: Optional[datetime] = None
+    distance_km: Optional[float] = None
 
 
 class MecanicienVerificationUpdate(BaseModel):
