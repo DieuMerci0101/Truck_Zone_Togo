@@ -29,7 +29,7 @@ from app.models.mecanicien import ProfilMecanicien
 from app.models.incident import Incident
 from app.models.assistance import DemandeAssistance
 from app.schemas.incident import IncidentOut
-from app.schemas.mecanicien import AssistanceOut
+from app.schemas.mecanicien import AssistanceOut, MecanicienVerificationUpdate
 from app.routers.auth import require_admin
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -340,6 +340,109 @@ async def update_document_statut(
 
     await db.flush()
     return {"message": f"Statut du document mis à jour : {statut}"}
+
+
+# ─── Vérification des mécaniciens ───────────────────
+
+@router.get("/mechanics/pending")
+async def list_pending_mechanics(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    statut: str | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Liste les mécaniciens en attente de vérification (justificatif soumis).
+    Protégé : uniquement les administrateurs.
+    """
+    from sqlalchemy.orm import selectinload
+
+    query = select(ProfilMecanicien).options(
+        selectinload(ProfilMecanicien.user)
+    )
+    if statut:
+        query = query.where(ProfilMecanicien.verification_status == statut)
+    else:
+        query = query.where(ProfilMecanicien.verification_status != "approved")
+    query = query.order_by(ProfilMecanicien.created_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(query)
+    profils = result.scalars().all()
+    return [
+        {
+            "id": str(p.id),
+            "user_id": str(p.user_id),
+            "nom_complet": p.user.nom_complet if p.user else None,
+            "email": p.user.email if p.user else None,
+            "telephone": p.user.telephone if p.user else None,
+            "specialites": p.specialites,
+            "annees_experience": p.annees_experience,
+            "tarification": p.tarification.value if hasattr(p.tarification, "value") else p.tarification,
+            "proof_document_url": p.proof_document_url,
+            "verification_status": p.verification_status,
+            "created_at": p.created_at.isoformat(),
+        }
+        for p in profils
+    ]
+
+
+@router.put("/verify-mechanic/{mecanicien_id}")
+async def verify_mechanic(
+    mecanicien_id: uuid.UUID,
+    body: MecanicienVerificationUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Approuve ou rejette le justificatif d'un mécanicien.
+    Protégé : uniquement les administrateurs.
+    Envoie une notification au mécanicien concerné.
+    """
+    from sqlalchemy.orm import selectinload
+    from app.utils.notifications import notify_user
+
+    result = await db.execute(
+        select(ProfilMecanicien)
+        .where(ProfilMecanicien.id == mecanicien_id)
+        .options(selectinload(ProfilMecanicien.user))
+    )
+    profil = result.scalar_one_or_none()
+    if not profil:
+        raise HTTPException(status_code=404, detail="Mécanicien non trouvé")
+
+    profil.verification_status = body.statut
+    lien = "/dashboard/mecanicien"
+
+    if body.statut == "approved":
+        profil.verification_status = "approved"
+        if profil.user:
+            profil.user.is_verified = True
+            await notify_user(
+                db,
+                user_id=profil.user_id,
+                titre="Compte mécanicien approuvé",
+                contenu="Votre justificatif a été approuvé. Vous avez maintenant accès à l'ensemble des fonctionnalités.",
+                type_notif="document",
+                lien=lien,
+            )
+    else:
+        profil.verification_status = "rejected"
+        motif = body.motif or "Justificatif non conforme"
+        if profil.user:
+            await notify_user(
+                db,
+                user_id=profil.user_id,
+                titre="Compte mécanicien rejeté",
+                contenu=f"Votre justificatif a été rejeté. Motif : {motif}. Veuillez soumettre un nouveau document.",
+                type_notif="document",
+                lien=lien,
+            )
+
+    await db.flush()
+    return {
+        "message": f"Vérification du mécanicien : {body.statut}",
+        "verification_status": profil.verification_status,
+    }
 
 
 # ─── Gestion des incidents ─────────────────────────

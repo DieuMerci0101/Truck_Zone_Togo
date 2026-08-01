@@ -3,13 +3,13 @@ from typing import TYPE_CHECKING
 from sqlalchemy import Enum, ForeignKey, Integer, String, Text  # type: ignore
 from sqlalchemy.dialects.postgresql import ARRAY  # type: ignore
 from sqlalchemy.orm import Mapped, mapped_column, relationship  # type: ignore
-
 from app.models.base import Base, TimestampMixin
 from app.models.enums import DisponibiliteMecanicien, TarificationMecanicien
 
 if TYPE_CHECKING:
     from app.models.assistance import DemandeAssistance
     from app.models.user import User
+
 
 class ProfilMecanicien(TimestampMixin, Base):
     __tablename__ = "profils_mecanicien"
@@ -47,6 +47,17 @@ class ProfilMecanicien(TimestampMixin, Base):
     rayon_intervention: Mapped[int] = mapped_column(Integer, nullable=False)
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # Vérification du mécanicien (attestation / diplôme / certificat)
+    proof_document_url: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, default=None
+    )
+    verification_status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="pending_upload",
+        server_default="pending_upload",
+    )
 
     # Relationships (référencées en string pour éviter les imports circulaires)
     user: Mapped["User"] = relationship("User", back_populates="profil_mecanicien")

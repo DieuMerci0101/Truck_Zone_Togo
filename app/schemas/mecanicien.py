@@ -57,6 +57,8 @@ class ProfilMecanicienOut(BaseModel):
     rayon_intervention: int
     bio: Optional[str] = None
     photo_url: Optional[str] = None
+    proof_document_url: Optional[str] = None
+    verification_status: str = "pending_upload"
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -98,6 +100,12 @@ class DemandeurInfo(BaseModel):
     nom_complet: str
     photo_profil: str | None = None
     role: str
+
+
+class MecanicienVerificationUpdate(BaseModel):
+    """Décision admin : approuver ou rejeter le justificatif d'un mécanicien."""
+    statut: str = Field(..., pattern=r"^(approved|rejected)$")
+    motif: Optional[str] = None
 
 
 # ─── Demande d'assistance ──────────────────────────

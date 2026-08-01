@@ -1,8 +1,9 @@
 import math
+import os
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,15 @@ from app.schemas.mecanicien import (
 )
 
 router = APIRouter(prefix="/api/mecaniciens", tags=["Mécaniciens"])
+
+PROOF_UPLOAD_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "uploads",
+    "justificatifs",
+)
+PROOF_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+PROOF_MAX_FILE_SIZE = 10 * 1024 * 1024
+VERIFICATION_STATUS = {"pending_upload", "pending_approval", "approved", "rejected"}
 
 
 def _localisation_wkt(lat: float, lng: float) -> str:
@@ -150,6 +160,76 @@ async def update_my_position(
     profil.localisation = _localisation_wkt(data.localisation_lat, data.localisation_lng)
     await db.flush()
     return {"message": "Position mise à jour", "localisation_lat": data.localisation_lat, "localisation_lng": data.localisation_lng}
+
+
+# ─── Vérification du mécanicien (justificatif) ──────
+
+@router.post("/upload-proof", status_code=201)
+async def upload_proof(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Upload du justificatif du mécanicien (attestation / diplôme / certificat).
+    Passe le statut de vérification à 'pending_approval'.
+    """
+    if current_user.role.value != "mecanicien":
+        raise HTTPException(status_code=403, detail="Réservé aux mécaniciens")
+
+    result = await db.execute(
+        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
+    )
+    profil = result.scalar_one_or_none()
+    if not profil:
+        raise HTTPException(status_code=404, detail="Profil mécanicien non trouvé")
+    if profil.verification_status == "approved":
+        raise HTTPException(status_code=400, detail="Votre compte est déjà validé")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in PROOF_ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Format non supporté (PDF, JPG, JPEG, PNG uniquement)")
+
+    content = await file.read()
+    if len(content) > PROOF_MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 10 Mo")
+
+    os.makedirs(PROOF_UPLOAD_DIR, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(PROOF_UPLOAD_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(content)
+
+    profil.proof_document_url = f"/uploads/justificatifs/{filename}"
+    profil.verification_status = "pending_approval"
+    await db.flush()
+
+    return {
+        "message": "Votre document a été soumis avec succès. Votre compte est actuellement en attente de confirmation par l'administrateur.",
+        "proof_document_url": profil.proof_document_url,
+        "verification_status": profil.verification_status,
+    }
+
+
+@router.get("/verification")
+async def get_my_verification(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Statut de vérification du mécanicien connecté."""
+    if current_user.role.value != "mecanicien":
+        raise HTTPException(status_code=403, detail="Réservé aux mécaniciens")
+    result = await db.execute(
+        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
+    )
+    profil = result.scalar_one_or_none()
+    if not profil:
+        raise HTTPException(status_code=404, detail="Profil mécanicien non trouvé")
+    return {
+        "verification_status": profil.verification_status,
+        "proof_document_url": profil.proof_document_url,
+        "is_verified": current_user.is_verified,
+    }
 
 
 # ─── Assistance ─────────────────────────────────────

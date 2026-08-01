@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
+from app.models.mecanicien import ProfilMecanicien
 from app.models.otp import OTPReset
 from app.utils.email import send_otp_email
 
@@ -46,6 +47,17 @@ def decode_token(token: str) -> dict:
         return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError:
         raise HTTPException(status_code=401, detail="Token invalide ou expiré")
+
+
+async def _mechanic_verification_status(user: User, db: AsyncSession) -> str | None:
+    """Renvoie le verification_status pour un mécanicien, sinon None."""
+    if user.role.value != "mecanicien":
+        return None
+    result = await db.execute(
+        select(ProfilMecanicien).where(ProfilMecanicien.user_id == user.id)
+    )
+    profil = result.scalar_one_or_none()
+    return profil.verification_status if profil else "pending_upload"
 
 
 async def get_current_user(
@@ -232,6 +244,7 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "bio": user.bio,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
+            "verification_status": await _mechanic_verification_status(user, db),
             "created_at": str(user.created_at),
         },
     )
