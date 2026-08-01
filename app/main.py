@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 
 from fastapi import FastAPI # type: ignore
@@ -90,6 +91,12 @@ app.include_router(notifications.router)
 app.include_router(offres.router)
 app.include_router(users.router)
 app.include_router(ws_router)
+
+# Crée les dossiers d'upload avant le montage statique pour éviter un crash
+# de démarrage sur Render (filesystem éphémère) et des erreurs d'écriture.
+os.makedirs("uploads", exist_ok=True)
+for _sub in ("documents", "justificatifs", "camions", "audios", "photos"):
+    os.makedirs(os.path.join("uploads", _sub), exist_ok=True)
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 

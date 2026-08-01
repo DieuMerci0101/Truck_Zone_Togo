@@ -203,6 +203,29 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.flush()
     await db.refresh(user)
+
+    # Crée automatiquement le profil associé au rôle "mecanicien".
+    # Sans ce profil, l'upload du justificatif échoue avec
+    # "Profil mécanicien non trouvé" (le chauffeur/propriétaire,
+    # lui, crée son profil via son formulaire).
+    if data.role == "mecanicien":
+        from app.models.mecanicien import ProfilMecanicien
+        from app.models.enums import TarificationMecanicien
+
+        db.add(
+            ProfilMecanicien(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                specialites=[],
+                annees_experience=0,
+                certifications=[],
+                tarification=TarificationMecanicien.payant,
+                rayon_intervention=30,
+                bio=None,
+                photo_url=None,
+            )
+        )
+
     return user
 
 

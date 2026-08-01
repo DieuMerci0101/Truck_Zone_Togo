@@ -70,19 +70,50 @@ def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
     return AssistanceOut.model_validate(a)
 
 
+async def _get_or_create_profil(
+    current_user: User,
+    db: AsyncSession,
+) -> ProfilMecanicien:
+    """
+    Retourne le profil mécanicien de l'utilisateur, et le crée s'il n'existe pas
+    (comptes créés avant la création automatique du profil à l'inscription).
+    Évite l'erreur "Profil mécanicien non trouvé" qui bloquait l'upload du justificatif.
+    """
+    result = await db.execute(
+        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
+    )
+    profil = result.scalar_one_or_none()
+    if profil:
+        return profil
+
+    from app.models.enums import TarificationMecanicien
+
+    profil = ProfilMecanicien(
+        id=uuid.uuid4(),
+        user_id=current_user.id,
+        specialites=[],
+        annees_experience=0,
+        certifications=[],
+        tarification=TarificationMecanicien.payant,
+        rayon_intervention=30,
+        bio=None,
+        photo_url=None,
+    )
+    db.add(profil)
+    await db.flush()
+    await db.refresh(profil)
+    profil.user = current_user
+    return profil
+
+
 @router.get("/me", response_model=ProfilMecanicienOut)
 async def get_my_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ProfilMecanicien)
-        .options(selectinload(ProfilMecanicien.user))
-        .where(ProfilMecanicien.user_id == current_user.id)
-    )
-    profil = result.scalar_one_or_none()
-    if not profil:
-        raise HTTPException(status_code=404, detail="Profil mécanicien non trouvé")
+    profil = await _get_or_create_profil(current_user, db)
+    if profil.user is None:
+        profil.user = current_user
     return profil
 
 
@@ -181,12 +212,7 @@ async def upload_proof(
     if current_user.role.value != "mecanicien":
         raise HTTPException(status_code=403, detail="Réservé aux mécaniciens")
 
-    result = await db.execute(
-        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
-    )
-    profil = result.scalar_one_or_none()
-    if not profil:
-        raise HTTPException(status_code=404, detail="Profil mécanicien non trouvé")
+    profil = await _get_or_create_profil(current_user, db)
     if profil.verification_status == "approved":
         raise HTTPException(status_code=400, detail="Votre compte est déjà validé")
 
@@ -236,12 +262,7 @@ async def get_my_verification(
     """Statut de vérification du mécanicien connecté."""
     if current_user.role.value != "mecanicien":
         raise HTTPException(status_code=403, detail="Réservé aux mécaniciens")
-    result = await db.execute(
-        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
-    )
-    profil = result.scalar_one_or_none()
-    if not profil:
-        raise HTTPException(status_code=404, detail="Profil mécanicien non trouvé")
+    profil = await _get_or_create_profil(current_user, db)
     return {
         "verification_status": profil.verification_status,
         "proof_document_url": profil.proof_document_url,
