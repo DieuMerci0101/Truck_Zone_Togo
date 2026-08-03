@@ -21,6 +21,25 @@ from app.schemas.conversation import (
 
 router = APIRouter(prefix="/api/conversations", tags=["Messagerie"])
 
+# Alias pour l'initiation d'une conversation depuis l'annuaire (ex: propriétaire → chauffeur).
+chat_router = APIRouter(prefix="/api/chat", tags=["Chat (initiation)"])
+
+
+@chat_router.post("/initiate", response_model=ConversationOut, status_code=201)
+async def initiate_conversation(
+    data: ConversationCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Démarre une conversation avec un utilisateur :
+     1) Vérifie si une conversation existe déjà entre current_user et le participant cible.
+     2) Si aucune n'existe : crée la conversation et enregistre le premier message.
+     3) Si elle existe déjà : ajoute le nouveau message dans la discussion existante.
+    Retourne toujours la conversation (existante ou nouvelle).
+    """
+    return await create_conversation(data, current_user, db)
+
 
 async def _get_conversation_with_access(
     conversation_id: uuid.UUID,

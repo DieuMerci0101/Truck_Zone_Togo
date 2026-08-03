@@ -238,6 +238,14 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
 
+    # Les administrateurs ne peuvent PAS se connecter via le formulaire standard.
+    # Ils doivent obligatoirement passer par l'Espace Administrateur (/api/auth/admin/login).
+    if user.role.value == "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Accès refusé. Les administrateurs doivent se connecter via l'Espace Administrateur.",
+        )
+
     access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
     refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
 
