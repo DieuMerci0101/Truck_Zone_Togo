@@ -34,7 +34,7 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 MAX_PHOTOS_PER_CAMION = 10
 
-CAMION_PUBLIABLES = {"bon_etat", "excellent"}
+CAMION_PUBLIABLES = {"bon_etat", "bon", "excellent"}
 
 # Marqueur utilisé pour les profils créés paresseusement (bascule de disponibilité)
 # tant que le chauffeur n'a pas complété son formulaire. Ces profils incomplets

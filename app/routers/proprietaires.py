@@ -38,7 +38,7 @@ router = APIRouter(prefix="/api/proprietaires", tags=["Propriétaires"])
 EDIT_WINDOW_MINUTES = 5
 OFFRE_EXPIRATION_DAYS = 30
 
-ETATS_PUBLIABLES = {"bon_etat", "excellent"}
+ETATS_PUBLIABLES = {"bon_etat", "bon", "excellent"}
 
 
 def _valider_publication(etat: str, is_public: bool, expires_at: datetime | None = None) -> None:

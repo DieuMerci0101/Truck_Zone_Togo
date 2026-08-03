@@ -364,7 +364,7 @@ async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_d
     user = result.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(status_code=400, detail="Email incorrect")
+        raise HTTPException(status_code=400, detail="Aucun compte n'est associé à cet e-mail")
 
     # Invalider les anciens OTP
     old_otps = await db.execute(
@@ -379,7 +379,7 @@ async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_d
         id=uuid.uuid4(),
         user_id=user.id,
         code_hash=bcrypt.hash(otp_code),
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
         used=False,
         attempts=0,
     )
@@ -444,7 +444,23 @@ async def reset_password(data: ResetPassword, db: AsyncSession = Depends(get_db)
     )
     otp = otp_result.scalar_one_or_none()
 
-    if not otp or not bcrypt.verify(data.code, otp.code_hash):
+    if not otp:
+        raise HTTPException(status_code=400, detail="Aucun code OTP actif. Redemandez un nouveau code.")
+
+    if otp.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        otp.used = True
+        await db.flush()
+        raise HTTPException(status_code=400, detail="Code OTP expiré. Redemandez un nouveau code.")
+
+    if otp.attempts >= 3:
+        otp.used = True
+        await db.flush()
+        raise HTTPException(status_code=400, detail="Trop de tentatives, demandez un nouveau code")
+
+    otp.attempts += 1
+    await db.flush()
+
+    if not bcrypt.verify(data.code, otp.code_hash):
         raise HTTPException(status_code=400, detail="Code OTP invalide")
 
     otp.used = True
