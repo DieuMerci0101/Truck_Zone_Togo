@@ -62,6 +62,12 @@ async def init_db():
             "ALTER TABLE profils_mecanicien ADD COLUMN IF NOT EXISTS position_updated_at TIMESTAMPTZ",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_status VARCHAR(50) DEFAULT 'pending_upload'",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_reject_motif TEXT",
+            "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'passeport'",
+            "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'rccm'",
+            "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'patente'",
+            "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'casier'",
+            "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'diplome'",
+            "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'photo_identite'",
         ]:
             try:
                 await conn.execute(text(stmt))

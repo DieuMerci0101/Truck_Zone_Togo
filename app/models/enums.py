@@ -74,8 +74,14 @@ class StatutOffre(str, enum.Enum):
 class TypeDocument(str, enum.Enum):
     permis = "permis"
     cni = "cni"
+    passeport = "passeport"
     certificat = "certificat"
     assurance = "assurance"
+    casier = "casier"
+    rccm = "rccm"
+    patente = "patente"
+    diplome = "diplome"
+    photo_identite = "photo_identite"
 
 
 class StatutDocument(str, enum.Enum):

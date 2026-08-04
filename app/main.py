@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from app.config import get_settings
 from app.database import init_db, close_db, async_session
 from fastapi.staticfiles import StaticFiles
-from app.routers import auth, chauffeurs, proprietaires, mecaniciens, conversations, incidents, admin, notifications, offres, users
+from app.routers import auth, chauffeurs, proprietaires, mecaniciens, conversations, incidents, admin, notifications, offres, users, countries
 from app.websocket_chat import router as ws_router
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️  Erreur création admin (non bloquant): {e}")
 
+    try:
+        from app.utils.seed_countries import countries_data
+        from app.models.country import Country
+        from sqlalchemy import func
+
+        async with async_session() as db:
+            result = await db.execute(select(func.count()).select_from(Country))
+            if result.scalar() == 0:
+                db.add_all([Country(**row) for row in countries_data()])
+                await db.commit()
+                logger.info(f"🌍 {len(countries_data())} pays insérés dans la table countries")
+            else:
+                logger.info("ℹ️  Table countries déjà peuplée, skip seeding")
+    except Exception as e:
+        logger.warning(f"⚠️  Erreur seeding pays (non bloquant): {e}")
+
     yield
 
     await close_db()
@@ -91,6 +107,7 @@ app.include_router(admin.router)
 app.include_router(notifications.router)
 app.include_router(offres.router)
 app.include_router(users.router)
+app.include_router(countries.router)
 app.include_router(ws_router)
 
 # Crée les dossiers d'upload avant le montage statique pour éviter un crash

@@ -88,8 +88,10 @@ async def list_offres(
     zone: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    now = datetime.now(timezone.utc)
     query = select(OffreRecrutement).where(
-        OffreRecrutement.statut == "active"
+        OffreRecrutement.statut == "active",
+        (OffreRecrutement.expires_at.is_(None)) | (OffreRecrutement.expires_at > now),
     )
     if type_contrat:
         query = query.where(OffreRecrutement.type_contrat == type_contrat)

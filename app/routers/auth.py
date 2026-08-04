@@ -89,6 +89,29 @@ async def require_admin(
     return current_user
 
 
+async def require_role(
+    *roles: str,
+) -> User:
+    """
+    Fabrique de dépendance RBAC : n'autorise que les rôles listés.
+    Utilisation : `current_user: User = Depends(require_role("admin"))`.
+    Renvoie 403 "Accès refusé" pour tout autre rôle.
+    """
+    allowed = set(roles)
+
+    async def _checker(
+        current_user: User = Depends(get_current_user),
+    ) -> User:
+        if current_user.role.value not in allowed:
+            raise HTTPException(
+                status_code=403,
+                detail="Accès refusé",
+            )
+        return current_user
+
+    return _checker
+
+
 async def require_verified(
     current_user: User = Depends(get_current_user),
 ) -> User:
@@ -107,7 +130,9 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     confirm_password: str
-    telephone: str = Field(..., pattern=r"^\+228\d{8}$")
+    # Numéro au format international E.164 : + <indicatif> <numéro national>
+    # (ex: +22870118993). L'indicatif est vérifié contre la table `countries`.
+    telephone: str = Field(..., pattern=r"^\+[1-9]\d{6,14}$")
     role: str = Field(..., pattern=r"^(chauffeur|proprietaire|mecanicien)$")
 
     def passwords_match(self):
@@ -185,6 +210,23 @@ class UserUpdate(BaseModel):
 async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     if data.password != data.confirm_password:
         raise HTTPException(status_code=400, detail="Les mots de passe ne correspondent pas")
+
+    # Sûreté maximale : le rôle admin ne peut JAMAIS être créé via /register.
+    if data.role == "admin":
+        raise HTTPException(status_code=403, detail="Accès refusé")
+
+    # L'indicatif international doit correspondre à un pays actif.
+    from app.models.country import Country
+
+    result = await db.execute(
+        select(Country.phone_code).where(Country.is_active.is_(True))
+    )
+    phone_codes = result.scalars().all()
+    if not any(data.telephone.startswith(code) for code in phone_codes):
+        raise HTTPException(
+            status_code=400,
+            detail="Indicatif international invalide. Veuillez sélectionner un pays valide.",
+        )
 
     existing = await db.execute(select(User).where(User.email == data.email))
     if existing.scalar_one_or_none():
@@ -364,7 +406,7 @@ async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_d
     user = result.scalar_one_or_none()
 
     if not user:
-        raise HTTPException(status_code=400, detail="Aucun compte n'est associé à cet e-mail")
+        raise HTTPException(status_code=400, detail="Adresse e-mail introuvable")
 
     # Invalider les anciens OTP
     old_otps = await db.execute(
@@ -389,7 +431,7 @@ async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_d
     # Envoyer l'email avec le code OTP via SMTP
     email_sent = send_otp_email(user.email, otp_code, user.nom_complet)
     if not email_sent:
-        raise HTTPException(status_code=500, detail="Erreur lors de l'envoi de l'email. Réessayez.")
+        raise HTTPException(status_code=500, detail="Échec de l'envoi de l'e-mail")
 
     return {"message": f"Un code OTP a été envoyé à {data.email}"}
 
@@ -467,7 +509,7 @@ async def reset_password(data: ResetPassword, db: AsyncSession = Depends(get_db)
     user.password_hash = bcrypt.hash(data.new_password)
     await db.flush()
 
-    return {"message": "Mot de passe réinitialisé avec succès"}
+    return {"message": "Mot de passe mis à jour avec succès. Vous pouvez vous connecter."}
 
 
 @router.post("/refresh", response_model=TokenResponse)

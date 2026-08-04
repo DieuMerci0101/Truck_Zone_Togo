@@ -14,6 +14,9 @@ class ParticipantOut(BaseModel):
     telephone: str
     role: str
     photo_profil: Optional[str] = None
+    # Badge de présence : disponibilité du chauffeur (disponible / en_mission /
+    # indisponible) ou statut du mécanicien (en_ligne / hors_ligne).
+    presence: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -23,6 +26,12 @@ class ParticipantOut(BaseModel):
 class ConversationCreate(BaseModel):
     participant_id: uuid.UUID
     premier_message: Optional[str] = None
+
+
+class InitiateFromOffer(BaseModel):
+    camion_id: Optional[uuid.UUID] = None
+    offre_id: Optional[uuid.UUID] = None
+    message: str = Field(..., min_length=1)
 
 
 class ConversationOut(BaseModel):

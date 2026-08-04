@@ -15,6 +15,7 @@ from app.routers.auth import get_current_user
 from app.schemas.conversation import (
     ConversationCreate,
     ConversationOut,
+    InitiateFromOffer,
     MessageCreate,
     MessageOut,
 )
@@ -23,6 +24,48 @@ router = APIRouter(prefix="/api/conversations", tags=["Messagerie"])
 
 # Alias pour l'initiation d'une conversation depuis l'annuaire (ex: propriétaire → chauffeur).
 chat_router = APIRouter(prefix="/api/chat", tags=["Chat (initiation)"])
+
+
+async def _existing_conversation_id(
+    user_a_id: uuid.UUID,
+    user_b_id: uuid.UUID,
+    db: AsyncSession,
+) -> uuid.UUID | None:
+    """Renvoie l'ID de la conversation directe existante entre deux utilisateurs, sinon None."""
+    my_parts = await db.execute(
+        select(ConversationParticipant).where(
+            ConversationParticipant.user_id == user_a_id
+        )
+    )
+    my_conv_ids = [p.conversation_id for p in my_parts.scalars().all()]
+    if not my_conv_ids:
+        return None
+    other_part = await db.execute(
+        select(ConversationParticipant).where(
+            ConversationParticipant.conversation_id.in_(my_conv_ids),
+            ConversationParticipant.user_id == user_b_id,
+        )
+    )
+    existing = other_part.scalar_one_or_none()
+    return existing.conversation_id if existing else None
+
+
+async def _build_conversation_out(
+    conv: Conversation,
+    db: AsyncSession,
+    last_message: str | None,
+    last_message_at: datetime | None,
+) -> ConversationOut:
+    participants = await _fetch_participants(conv.id, db)
+    return ConversationOut(
+        id=conv.id,
+        type=conv.type.value if hasattr(conv.type, "value") else conv.type,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+        last_message=last_message,
+        last_message_at=last_message_at,
+        participants=participants,
+    )
 
 
 @chat_router.post("/initiate", response_model=ConversationOut, status_code=201)
@@ -39,6 +82,150 @@ async def initiate_conversation(
     Retourne toujours la conversation (existante ou nouvelle).
     """
     return await create_conversation(data, current_user, db)
+
+
+@chat_router.post("/initiate-from-offer", response_model=ConversationOut, status_code=201)
+async def initiate_from_offer(
+    data: InitiateFromOffer,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Démarre (ou réutilise) la conversation privée entre le chauffeur connecté
+    et le propriétaire qui a publié un camion ou une offre.
+    Paramètres : camion_id OU offre_id + le message rédigé par le chauffeur.
+    """
+    from app.models.camion import Camion
+    from app.models.offre import OffreRecrutement
+    from app.models.proprietaire import ProfilProprietaire
+
+    if not data.camion_id and not data.offre_id:
+        raise HTTPException(
+            status_code=400,
+            detail="camion_id ou offre_id est requis",
+        )
+
+    now = datetime.now(timezone.utc)
+    profil_proprietaire_id = None
+    reference = "annonce"
+
+    if data.offre_id:
+        result = await db.execute(
+            select(OffreRecrutement).where(OffreRecrutement.id == data.offre_id)
+        )
+        offre = result.scalar_one_or_none()
+        if not offre:
+            raise HTTPException(status_code=404, detail="Offre non trouvée")
+        expires = offre.expires_at
+        if expires is not None:
+            expires_aware = expires.replace(tzinfo=timezone.utc) if expires.tzinfo is None else expires
+            if expires_aware <= now:
+                raise HTTPException(status_code=400, detail="Cette offre a expiré")
+        profil_proprietaire_id = offre.proprietaire_id
+        reference = f"l'offre « {offre.titre} »"
+
+    elif data.camion_id:
+        result = await db.execute(
+            select(Camion).where(Camion.id == data.camion_id)
+        )
+        camion = result.scalar_one_or_none()
+        if not camion:
+            raise HTTPException(status_code=404, detail="Camion non trouvé")
+        if not camion.is_public:
+            raise HTTPException(status_code=400, detail="Ce camion n'est pas public")
+        expires = camion.expires_at
+        if expires is None or expires <= now:
+            raise HTTPException(status_code=400, detail="Cette annonce a expiré")
+        if not camion.proprietaire_id:
+            raise HTTPException(status_code=400, detail="Aucun propriétaire associé à ce camion")
+        profil_proprietaire_id = camion.proprietaire_id
+        reference = f"le camion {camion.immatriculation}"
+
+    profil_result = await db.execute(
+        select(ProfilProprietaire).where(ProfilProprietaire.id == profil_proprietaire_id)
+    )
+    profil = profil_result.scalar_one_or_none()
+    if not profil:
+        raise HTTPException(status_code=404, detail="Propriétaire introuvable")
+
+    owner_user_id = profil.user_id
+    if str(owner_user_id) == str(current_user.id):
+        raise HTTPException(status_code=400, detail="Impossible de se contacter soi-même")
+
+    # Vérifier si une conversation existe déjà entre le chauffeur et le propriétaire.
+    existing_conv_id = await _existing_conversation_id(
+        current_user.id, owner_user_id, db
+    )
+
+    if existing_conv_id:
+        conv_result = await db.execute(
+            select(Conversation).where(Conversation.id == existing_conv_id)
+        )
+        conv = conv_result.scalar_one()
+        msg = Message(
+            id=uuid.uuid4(),
+            conversation_id=conv.id,
+            expediteur_id=current_user.id,
+            contenu=data.message,
+            type="texte",
+        )
+        db.add(msg)
+        conv.updated_at = now
+        await _notifier_autres_participants(
+            conv.id,
+            current_user.id,
+            current_user.nom_complet,
+            data.message,
+            db,
+        )
+        await db.commit()
+        await db.refresh(conv)
+        return await _build_conversation_out(conv, db, data.message, now)
+
+    # Aucune conversation existante → création + premier message.
+    conv = Conversation(type="directe")
+    db.add(conv)
+    await db.flush()
+
+    db.add(ConversationParticipant(conversation_id=conv.id, user_id=current_user.id))
+    await db.flush()
+    db.add(ConversationParticipant(conversation_id=conv.id, user_id=owner_user_id))
+    await db.flush()
+
+    msg = Message(
+        id=uuid.uuid4(),
+        conversation_id=conv.id,
+        expediteur_id=current_user.id,
+        contenu=data.message,
+        type="texte",
+    )
+    db.add(msg)
+    conv.updated_at = now
+
+    await _notifier_autres_participants(
+        conv.id,
+        current_user.id,
+        current_user.nom_complet,
+        data.message,
+        db,
+    )
+
+    # Notifier le propriétaire qu'un chauffeur l'a contacté à propos de l'annonce.
+    from app.utils.notifications import notify_user
+
+    await notify_user(
+        db,
+        user_id=owner_user_id,
+        titre="Nouvelle demande de contact",
+        contenu=f"{current_user.nom_complet} vous a contacté à propos de {reference}.",
+        type_notif="message",
+        lien=f"/dashboard/chat?conv={conv.id}",
+    )
+
+    await db.commit()
+    await db.refresh(conv)
+
+    return await _build_conversation_out(conv, db, data.message, now)
 
 
 async def _get_conversation_with_access(
@@ -69,6 +256,8 @@ async def _fetch_participants(
     db: AsyncSession,
 ) -> list["ParticipantOut"]:
     from app.schemas.conversation import ParticipantOut
+    from app.models.chauffeur import ProfilChauffeur
+    from app.models.mecanicien import ProfilMecanicien
 
     result = await db.execute(
         select(ConversationParticipant)
@@ -81,13 +270,32 @@ async def _fetch_participants(
         u = p.user
         if u is None:
             continue
+        role = u.role.value if hasattr(u.role, "value") else u.role
+        presence = None
+        if role == "chauffeur":
+            chauffeur_result = await db.execute(
+                select(ProfilChauffeur).where(ProfilChauffeur.user_id == u.id)
+            )
+            chauffeur = chauffeur_result.scalar_one_or_none()
+            if chauffeur and chauffeur.disponibilite is not None:
+                presence = chauffeur.disponibilite.value if hasattr(chauffeur.disponibilite, "value") else chauffeur.disponibilite
+        elif role == "mecanicien":
+            mecanicien_result = await db.execute(
+                select(ProfilMecanicien).where(ProfilMecanicien.user_id == u.id)
+            )
+            mecanicien = mecanicien_result.scalar_one_or_none()
+            if mecanicien and mecanicien.position_active:
+                presence = "en_ligne"
+            else:
+                presence = "hors_ligne"
         out.append(ParticipantOut(
             id=u.id,
             nom_complet=u.nom_complet,
             email=u.email,
             telephone=u.telephone,
-            role=u.role.value if hasattr(u.role, "value") else u.role,
+            role=role,
             photo_profil=u.photo_profil,
+            presence=presence,
         ))
     return out
 

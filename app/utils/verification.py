@@ -23,12 +23,16 @@ REJECTED = "rejected"
 
 VALID_STATUSES = {PENDING_UPLOAD, PENDING_APPROVAL, APPROVED, REJECTED}
 
-# Documents obligatoires par rôle (types Document) pour considérer le dossier "complet".
-REQUIRED_DOCS_BY_ROLE: dict[str, list[str]] = {
-    "chauffeur": ["permis", "cni", "certificat", "assurance"],
-    "proprietaire": ["cni", "certificat"],
-    # Le mécanicien soumet un justificatif unique (attestation / diplôme / certificat)
-    "mecanicien": ["justificatif"],
+# Documents obligatoires par rôle pour considérer le dossier "complet".
+# Un groupe = liste de types équivalents : il suffit que l'UN d'entre eux soit
+# soumis (ex: pièce d'identité = "cni" OU "passeport").
+#   - chauffeur     : permis → pièce d'identité → casier judiciaire → photo d'identité
+#   - proprietaire  : preuve d'entreprise (RCCM/patente) → pièce d'identité
+#   - mecanicien    : justificatif unique (diplôme / attestation / certificat)
+REQUIRED_DOCS_BY_ROLE: dict[str, list[list[str]]] = {
+    "chauffeur": [["permis"], ["cni", "passeport"], ["casier"], ["photo_identite"]],
+    "proprietaire": [["rccm", "patente"], ["cni", "passeport"]],
+    "mecanicien": [["justificatif"]],
 }
 
 
@@ -60,7 +64,11 @@ async def all_required_docs_submitted(db: AsyncSession, user: User) -> bool:
         profil = result.scalar_one_or_none()
         return bool(profil and profil.proof_document_url)
     submitted = await submitted_doc_types(db, user.id)
-    return set(required).issubset(submitted)
+    for group in required:
+        group_types = group if isinstance(group, (list, tuple, set)) else [group]
+        if not any(t in submitted for t in group_types):
+            return False
+    return True
 
 
 def set_verification_status(

@@ -24,6 +24,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.user import User
+from app.models.country import Country
 from app.models.chauffeur import ProfilChauffeur
 from app.models.proprietaire import ProfilProprietaire
 from app.models.mecanicien import ProfilMecanicien
@@ -44,6 +45,7 @@ __all__ = [
     "Base",
     "TimestampMixin",
     "User",
+    "Country",
     "ProfilChauffeur",
     "ProfilProprietaire",
     "ProfilMecanicien",
