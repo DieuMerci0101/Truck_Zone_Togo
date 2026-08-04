@@ -7,7 +7,7 @@ Chaque endpoint utilise la dependency `require_admin` qui vérifie :
 3. Sinon, renvoie une erreur HTTP 403 (Accès interdit)
 
 Utilisation :
-    from app.routers.auth import require_admin
+from app.routers.auth import require_admin, user_role
 
     @router.get("/admin/users")
     async def list_users(admin: User = Depends(require_admin)):
@@ -29,6 +29,7 @@ from app.models.proprietaire import ProfilProprietaire
 from app.models.mecanicien import ProfilMecanicien
 from app.models.incident import Incident
 from app.models.assistance import DemandeAssistance
+from app.models.camion import Camion
 from app.schemas.incident import IncidentOut
 from app.schemas.mecanicien import AssistanceOut, MecanicienVerificationUpdate
 from app.routers.auth import require_admin
@@ -68,6 +69,9 @@ async def get_stats(
             select(func.count()).select_from(User).where(User.role == "admin")
         )
     ).scalar() or 0
+    total_camions = (
+        await db.execute(select(func.count()).select_from(Camion))
+    ).scalar() or 0
 
     return {
         "total_utilisateurs": total_users,
@@ -75,6 +79,7 @@ async def get_stats(
         "proprietaires": total_proprietaires,
         "mecaniciens": total_mecaniciens,
         "admins": total_admins,
+        "camions": total_camions,
     }
 
 
@@ -287,7 +292,7 @@ async def update_document_statut(
     doc.validated_at = datetime.now(timezone.utc)
     doc.commentaire_admin = motif if statut == "rejete" else None
 
-    lien_documents = f"/dashboard/{doc.utilisateur.role.value}/documents"
+    lien_documents = f"/dashboard/{user_role(doc.utilisateur)}/documents"
 
     if statut == "valide":
         await notify_user(
@@ -301,7 +306,7 @@ async def update_document_statut(
         user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))
         user = user_result.scalar_one_or_none()
         if user:
-            role_types = REQUIRED_DOCS_BY_ROLE.get(user.role.value)
+            role_types = REQUIRED_DOCS_BY_ROLE.get(user_role(user))
             if role_types:
                 docs_result = await db.execute(
                     select(Document).where(
@@ -524,7 +529,7 @@ async def list_verifications(
                 }
             )
 
-    mechanic_user_ids = [u.id for u in users if u.role.value == "mecanicien"]
+    mechanic_user_ids = [u.id for u in users if user_role(u) == "mecanicien"]
     proof_by_user: dict[str, dict] = {}
     if mechanic_user_ids:
         profils_result = await db.execute(
@@ -543,9 +548,9 @@ async def list_verifications(
 
     items = []
     for u in users:
-        required = REQUIRED_DOCS_BY_ROLE.get(u.role.value, [])
+        required = REQUIRED_DOCS_BY_ROLE.get(user_role(u), [])
         docs = docs_by_user.get(str(u.id), [])
-        if u.role.value == "mecanicien":
+        if user_role(u) == "mecanicien":
             proof = proof_by_user.get(str(u.id))
             docs = [proof] if proof and proof.get("fichier_url") else []
         submitted = {d["type_document"] for d in docs}

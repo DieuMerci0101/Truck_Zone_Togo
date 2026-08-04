@@ -37,7 +37,7 @@ async def seed():
         admin = User(
             id=uuid.uuid4(),
             email="admin@togotruckconnect.com",
-            password_hash=bcrypt.hash("Admin@123"),
+            password_hash=bcrypt.hash("Admin@2026"),
             nom_complet="Admin TogoTruck",
             telephone="+22890123456",
             role=UserRole.admin,

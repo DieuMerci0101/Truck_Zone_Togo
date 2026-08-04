@@ -26,6 +26,20 @@ router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
 # ─── Helpers ────────────────────────────────────────
 
+def normalize_role(role) -> str:
+    """
+    Normalise un rôle quel qu'il soit ('ADMIN', 'admin', 'DRIVER', ...) en
+    minuscules afin que toute la logique (JWT, redirects, RBAC) soit cohérente.
+    """
+    value = getattr(role, "value", role)
+    return str(value).strip().lower()
+
+
+def user_role(user) -> str:
+    """Récupère le rôle d'un User de façon sûre (enum ou chaîne brute)."""
+    return normalize_role(getattr(user, "role", ""))
+
+
 def create_token(user_id: str, token_type: str = "access", role: str | None = None, is_verified: bool = False, verification_status: str | None = None) -> str:
     if token_type == "access":
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
@@ -39,7 +53,7 @@ def create_token(user_id: str, token_type: str = "access", role: str | None = No
         "verification_status": verification_status or PENDING_UPLOAD,
     }
     if role:
-        payload["role"] = role
+        payload["role"] = normalize_role(role)
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -81,7 +95,7 @@ async def require_admin(
     Si ce n'est pas le cas, renvoie une erreur 403.
     À utiliser sur toutes les routes réservées à l'administration.
     """
-    if current_user.role.value != "admin":
+    if user_role(current_user) != "admin":
         raise HTTPException(
             status_code=403,
             detail="Accès réservé aux administrateurs",
@@ -97,12 +111,12 @@ async def require_role(
     Utilisation : `current_user: User = Depends(require_role("admin"))`.
     Renvoie 403 "Accès refusé" pour tout autre rôle.
     """
-    allowed = set(roles)
+    allowed = {normalize_role(r) for r in roles}
 
     async def _checker(
         current_user: User = Depends(get_current_user),
     ) -> User:
-        if current_user.role.value not in allowed:
+        if user_role(current_user) not in allowed:
             raise HTTPException(
                 status_code=403,
                 detail="Accès refusé",
@@ -115,7 +129,7 @@ async def require_role(
 async def require_verified(
     current_user: User = Depends(get_current_user),
 ) -> User:
-    if not current_user.is_verified and current_user.role.value != "admin":
+    if not current_user.is_verified and user_role(current_user) != "admin":
         raise HTTPException(
             status_code=403,
             detail="Veuillez d'abord soumettre vos documents pour validation",
@@ -282,14 +296,15 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
 
     # Les administrateurs ne peuvent PAS se connecter via le formulaire standard.
     # Ils doivent obligatoirement passer par l'Espace Administrateur (/api/auth/admin/login).
-    if user.role.value == "admin":
+    if user_role(user) == "admin":
         raise HTTPException(
             status_code=403,
             detail="Accès refusé. Les administrateurs doivent se connecter via l'Espace Administrateur.",
         )
 
-    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
+    role = user_role(user)
+    access_token = create_token(str(user.id), "access", role=role, is_verified=user.is_verified, verification_status=user.verification_status)
+    refresh_token = create_token(str(user.id), "refresh", role=role, is_verified=user.is_verified, verification_status=user.verification_status)
 
     return TokenResponse(
         access_token=access_token,
@@ -299,7 +314,7 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "email": user.email,
             "nom_complet": user.nom_complet,
             "telephone": user.telephone,
-            "role": user.role.value,
+            "role": role,
             "photo_profil": user.photo_profil,
             "date_naissance": user.date_naissance,
             "lieu_naissance": user.lieu_naissance,
@@ -327,14 +342,15 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
-    if user.role.value != "admin":
+    if user_role(user) != "admin":
         raise HTTPException(
             status_code=403,
             detail="Ce compte n'est pas un administrateur",
         )
 
-    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
+    role = user_role(user)
+    access_token = create_token(str(user.id), "access", role=role, is_verified=user.is_verified, verification_status=user.verification_status)
+    refresh_token = create_token(str(user.id), "refresh", role=role, is_verified=user.is_verified, verification_status=user.verification_status)
 
     return TokenResponse(
         access_token=access_token,
@@ -344,7 +360,7 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "email": user.email,
             "nom_complet": user.nom_complet,
             "telephone": user.telephone,
-            "role": user.role.value,
+            "role": role,
             "photo_profil": user.photo_profil,
             "date_naissance": user.date_naissance,
             "lieu_naissance": user.lieu_naissance,
@@ -524,8 +540,9 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Utilisateur non trouvé ou désactivé")
 
-    access_token = create_token(str(user.id), "access", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
-    refresh_token = create_token(str(user.id), "refresh", role=user.role.value, is_verified=user.is_verified, verification_status=user.verification_status)
+    role = user_role(user)
+    access_token = create_token(str(user.id), "access", role=role, is_verified=user.is_verified, verification_status=user.verification_status)
+    refresh_token = create_token(str(user.id), "refresh", role=role, is_verified=user.is_verified, verification_status=user.verification_status)
 
     return TokenResponse(
         access_token=access_token,
@@ -534,7 +551,7 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
             "id": str(user.id),
             "email": user.email,
             "nom_complet": user.nom_complet,
-            "role": user.role.value,
+            "role": role,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
             "verification_status": user.verification_status,

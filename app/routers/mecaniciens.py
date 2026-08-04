@@ -384,7 +384,7 @@ async def upload_proof(
         titre="Nouveau justificatif à vérifier",
         contenu=f"{current_user.nom_complet} a soumis son justificatif mécanicien. Il attend votre validation.",
         type_notif="document",
-        lien="/dashboard/admin/documents",
+        lien="/admin/dashboard/documents",
     )
 
     return {
@@ -456,7 +456,7 @@ async def create_assistance(
         titre="Nouvelle demande d'assistance",
         contenu=f"{current_user.nom_complet} demande une assistance de type « {data.type_panne} » (urgence « {data.urgence} »).",
         type_notif="assistance",
-        lien="/dashboard/admin/assistance",
+        lien="/admin/dashboard/assistance",
     )
     await notify_user(
         db,

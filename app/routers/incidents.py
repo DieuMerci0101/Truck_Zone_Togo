@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models.user import User
 from app.models.incident import Incident, IncidentCommentaire
-from app.routers.auth import get_current_user
+from app.routers.auth import get_current_user, user_role
 from app.schemas.incident import (
     IncidentCommentaireCreate,
     IncidentCommentaireOut,
@@ -51,7 +51,7 @@ async def list_incidents(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Incident).options(selectinload(Incident.declarant))
-    if current_user.role.value != "admin":
+    if user_role(current_user) != "admin":
         query = query.where(Incident.declarant_id == current_user.id)
     if statut:
         query = query.where(Incident.statut == statut)
@@ -97,7 +97,7 @@ async def create_incident(
         titre="Nouvel incident déclaré",
         contenu=f"Un incident de type « {type_label} » de gravité « {gravite_label } » a été déclaré. Description: {data.description[:100] if data.description else 'N/A'}",
         type_notif="incident",
-        lien=f"/dashboard/admin/incidents",
+        lien=f"/admin/dashboard/incidents",
     )
 
     await notify_user(
@@ -160,7 +160,7 @@ async def update_incident_statut(
     db: AsyncSession = Depends(get_db),
 ):
     """Admin può chiudere o aggiornare lo statuto di un incident."""
-    if current_user.role.value != "admin":
+    if user_role(current_user) != "admin":
         raise HTTPException(status_code=403, detail="Réservé aux administrateurs")
     result = await db.execute(
         select(Incident)
@@ -207,7 +207,7 @@ async def update_incident(
     incident = result.scalar_one_or_none()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident non trouvé")
-    if incident.declarant_id != current_user.id and current_user.role.value != "admin":
+    if incident.declarant_id != current_user.id and user_role(current_user) != "admin":
         raise HTTPException(status_code=403, detail="Accès refusé")
 
     update_data = data.model_dump(exclude_unset=True)
