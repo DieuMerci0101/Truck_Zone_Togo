@@ -23,19 +23,19 @@ async def lifespan(app: FastAPI):
     try:
         from app.models.user import User
         from app.models.enums import UserRole
-        from sqlalchemy import select, func
+        from sqlalchemy import select
         from passlib.hash import bcrypt
 
+        admin_email = "admin@togotruckconnect.com"
+
         async with async_session() as db:
-            result = await db.execute(
-                select(func.count()).select_from(User).where(User.role == UserRole.admin)
-            )
-            admin_count = result.scalar()
-            if admin_count == 0:
+            result = await db.execute(select(User).where(User.email == admin_email))
+            admin_user = result.scalar_one_or_none()
+            if admin_user is None:
                 password_hash = bcrypt.hash("Admin@2026")
                 admin_user = User(
                     id=uuid.uuid4(),
-                    email="admin@togotruckconnect.com",
+                    email=admin_email,
                     password_hash=password_hash,
                     nom_complet="Admin TogoTruck",
                     telephone="+22890123456",
@@ -46,6 +46,14 @@ async def lifespan(app: FastAPI):
                 db.add(admin_user)
                 await db.commit()
                 logger.info("✅ Compte admin par défaut créé: admin@togotruckconnect.com")
+            elif admin_user.role != UserRole.admin:
+                # Un compte avec cet email existe déjà : on s'assure qu'il a
+                # bien le rôle admin (idempotent, sans casser le reste).
+                admin_user.role = UserRole.admin
+                admin_user.is_verified = True
+                admin_user.is_active = True
+                await db.commit()
+                logger.info("✅ Rôle du compte existant corrigé en 'admin'")
             else:
                 logger.info("ℹ️  Compte admin déjà existant, skip création")
     except Exception as e:

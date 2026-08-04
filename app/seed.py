@@ -28,73 +28,119 @@ from app.models import (
 )
 from passlib.hash import bcrypt # type: ignore
 
+ADMIN_EMAIL = "admin@togotruckconnect.com"
+ADMIN_PASSWORD = "Admin@2026"
+
+
+async def ensure_admin(db):
+    """Crée le compte administrateur s'il n'existe pas (idempotent)."""
+    from sqlalchemy import select
+
+    result = await db.execute(select(User).where(User.email == ADMIN_EMAIL))
+    existing = result.scalar_one_or_none()
+    if existing:
+        if existing.role != UserRole.admin:
+            existing.role = UserRole.admin
+            existing.is_verified = True
+            existing.is_active = True
+            await db.flush()
+            print(f"✅ Rôle du compte existant corrigé en 'admin' : {ADMIN_EMAIL}")
+        else:
+            print(f"ℹ️  Compte admin déjà présent : {ADMIN_EMAIL}")
+        return existing
+
+    admin = User(
+        id=uuid.uuid4(),
+        email=ADMIN_EMAIL,
+        password_hash=bcrypt.hash(ADMIN_PASSWORD),
+        nom_complet="Admin TogoTruck",
+        telephone="+22890123456",
+        role=UserRole.admin,
+        is_verified=True,
+        is_active=True,
+    )
+    db.add(admin)
+    await db.flush()
+    print(f"✅ Compte admin créé : {ADMIN_EMAIL}")
+    return admin
+
 
 async def seed():
     print("🌱 Insertion des données de démonstration...")
 
     async with async_session() as db:
-        # ── Admin ──
-        admin = User(
-            id=uuid.uuid4(),
-            email="admin@togotruckconnect.com",
-            password_hash=bcrypt.hash("Admin@2026"),
-            nom_complet="Admin TogoTruck",
-            telephone="+22890123456",
-            role=UserRole.admin,
-            is_verified=True,
-            is_active=True,
-        )
-        db.add(admin)
+        await ensure_admin(db)
 
         # ── Chauffeur ──
-        chauffeur_user = User(
-            id=uuid.uuid4(),
-            email="kofi.chauffeur@email.com",
-            password_hash=bcrypt.hash("Chauffeur@123"),
-            nom_complet="Kofi Amedee",
-            telephone="+22891234567",
-            role=UserRole.chauffeur,
-            is_verified=True,
-            is_active=True,
-        )
-        db.add(chauffeur_user)
+        async def user_exists(email: str) -> bool:
+            from sqlalchemy import select
 
-        profil_chauffeur = ProfilChauffeur(
-            id=uuid.uuid4(),
-            user_id=chauffeur_user.id,
-            numero_permis="TG-2020-12345",
-            categorie_permis=CategoriePermis.C,
-            annees_experience=5,
-            types_transport=["marchandises", "conteneurs"],
-            zones_circulation=["Lomé", "Kara", "Sokodé"],
-            disponibilite=DisponibiliteChauffeur.disponible,
-            bio="Chauffeur expérimenté, ponctuel et rigoureux.",
-        )
-        db.add(profil_chauffeur)
+            r = await db.execute(select(User.id).where(User.email == email))
+            return r.scalar_one_or_none() is not None
+
+        chauffeur_email = "kofi.chauffeur@email.com"
+        async def camion_exists(immatriculation: str) -> bool:
+            from sqlalchemy import select
+
+            r = await db.execute(select(Camion.id).where(Camion.immatriculation == immatriculation))
+            return r.scalar_one_or_none() is not None
+
+        if await user_exists(chauffeur_email):
+            print(f"ℹ️  Chauffeur déjà présent : {chauffeur_email}")
+        else:
+            chauffeur_user = User(
+                id=uuid.uuid4(),
+                email=chauffeur_email,
+                password_hash=bcrypt.hash("Chauffeur@123"),
+                nom_complet="Kofi Amedee",
+                telephone="+22891234567",
+                role=UserRole.chauffeur,
+                is_verified=True,
+                is_active=True,
+            )
+            db.add(chauffeur_user)
+
+            profil_chauffeur = ProfilChauffeur(
+                id=uuid.uuid4(),
+                user_id=chauffeur_user.id,
+                numero_permis="TG-2020-12345",
+                categorie_permis=CategoriePermis.C,
+                annees_experience=5,
+                types_transport=["marchandises", "conteneurs"],
+                zones_circulation=["Lomé", "Kara", "Sokodé"],
+                disponibilite=DisponibiliteChauffeur.disponible,
+                bio="Chauffeur expérimenté, ponctuel et rigoureux.",
+            )
+            db.add(profil_chauffeur)
 
         # ── Propriétaire ──
-        proprio_user = User(
-            id=uuid.uuid4(),
-            email="abi.proprietaire@email.com",
-            password_hash=bcrypt.hash("Proprio@123"),
-            nom_complet="Abi Console",
-            telephone="+22892345678",
-            role=UserRole.proprietaire,
-            is_verified=True,
-            is_active=True,
-        )
-        db.add(proprio_user)
+        proprio_email = "abi.proprietaire@email.com"
+        profil_proprio = None
+        if await user_exists(proprio_email):
+            print(f"ℹ️  Propriétaire déjà présent : {proprio_email}")
+        else:
+            proprio_user = User(
+                id=uuid.uuid4(),
+                email=proprio_email,
+                password_hash=bcrypt.hash("Proprio@123"),
+                nom_complet="Abi Console",
+                telephone="+22892345678",
+                role=UserRole.proprietaire,
+                is_verified=True,
+                is_active=True,
+            )
+            db.add(proprio_user)
 
-        profil_proprio = ProfilProprietaire(
-            id=uuid.uuid4(),
-            user_id=proprio_user.id,
-            nom_entreprise="Console Transport SARL",
-            type_activite=TypeActivite.transport,
-            adresse="Boulevard du 13 Janvier, Lomé",
-            localisation="POINT(1.2255 6.1723)",
-            bio="Entreprise de transport routier depuis 2015.",
-        )
-        db.add(profil_proprio)
+            profil_proprio = ProfilProprietaire(
+                id=uuid.uuid4(),
+                user_id=proprio_user.id,
+                nom_entreprise="Console Transport SARL",
+                type_activite=TypeActivite.transport,
+                adresse="Boulevard du 13 Janvier, Lomé",
+                localisation="POINT(1.2255 6.1723)",
+                bio="Entreprise de transport routier depuis 2015.",
+            )
+            db.add(profil_proprio)
 
         # ── Camions ──
         camions_data = [
@@ -103,6 +149,11 @@ async def seed():
             ("TG-9012-EF", "Scania", "R450", 2021, TypeCamion.citerne, 22.0, EtatCamion.excellent),
         ]
         for imm, marque, modele, annee, type_c, cap, etat in camions_data:
+            if not profil_proprio:
+                continue
+            if await camion_exists(imm):
+                print(f"ℹ️  Camion déjà présent : {imm}")
+                continue
             camion = Camion(
                 id=uuid.uuid4(),
                 proprietaire_id=profil_proprio.id,
@@ -126,6 +177,9 @@ async def seed():
             ("Youssouf Auto", "youssouf.auto@email.com", ["Diagnostic électronique"], "POINT(1.2400 6.1700)", "Disponible", "Payant"),
         ]
         for nom, email, spec, loc, disp, tarif in mecaniciens_data:
+            if await user_exists(email):
+                print(f"ℹ️  Mécanicien déjà présent : {email}")
+                continue
             meca_user = User(
                 id=uuid.uuid4(),
                 email=email,
@@ -154,10 +208,10 @@ async def seed():
 
         await db.commit()
         print("✅ Données de démonstration insérées avec succès !")
-        print(f"   - 1 Admin")
-        print(f"   - 1 Chauffeur")
-        print(f"   - 1 Propriétaire (3 camions)")
-        print(f"   - 5 Mécaniciens fictifs")
+        print("   - 1 Admin")
+        print("   - 1 Chauffeur")
+        print("   - 1 Propriétaire (3 camions)")
+        print("   - 5 Mécaniciens fictifs")
 
     await engine.dispose()
 
