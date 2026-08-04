@@ -400,7 +400,10 @@ async def verify_mechanic(
     """
     from sqlalchemy.orm import selectinload
     from app.utils.notifications import notify_user
-    from app.utils.email import send_verification_rejection_email
+    from app.utils.email import (
+        send_verification_rejection_email,
+        send_verification_approved_email,
+    )
     from app.utils.verification import set_verification_status, APPROVED, REJECTED
 
     result = await db.execute(
@@ -430,6 +433,11 @@ async def verify_mechanic(
                 contenu="Votre justificatif a été approuvé. Vous avez maintenant accès à l'ensemble des fonctionnalités.",
                 type_notif="document",
                 lien=lien,
+            )
+            send_verification_approved_email(
+                to_email=profil.user.email,
+                user_name=profil.user.nom_complet or "",
+                role="mecanicien",
             )
     else:
         profil.verification_status = "rejected"
@@ -580,7 +588,10 @@ async def decide_verification(
     Protégé : uniquement les administrateurs.
     """
     from app.utils.notifications import notify_user
-    from app.utils.email import send_verification_rejection_email
+    from app.utils.email import (
+        send_verification_rejection_email,
+        send_verification_approved_email,
+    )
     from app.utils.verification import set_verification_status, APPROVED, REJECTED
     from app.models.document import Document
 
@@ -625,6 +636,11 @@ async def decide_verification(
             contenu="Votre dossier d'inscription a été validé. Vous avez maintenant un accès complet à la plateforme.",
             type_notif="document",
             lien=f"/dashboard/{role}",
+        )
+        send_verification_approved_email(
+            to_email=user.email,
+            user_name=user.nom_complet or "",
+            role=role,
         )
         message = f"Compte de {user.nom_complet} validé avec succès"
     else:

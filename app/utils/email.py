@@ -208,6 +208,80 @@ def _role_label(role: str | None) -> str:
     }.get(role, "utilisateur")
 
 
+def send_verification_approved_email(to_email: str, user_name: str, role: str | None = None) -> bool:
+    """
+    Envoie un email d'activation à l'utilisateur dès que l'administrateur
+    valide son dossier de vérification (documents acceptés).
+    """
+    settings = get_settings()
+
+    if not settings.smtp_user or not settings.smtp_password:
+        logger.warning("[EMAIL] SMTP non configuré. Pas d'email d'activation pour %s", to_email)
+        return False
+
+    subject = "Togo Truck Connect - Votre compte est activé 🎉"
+    role_label = _role_label(role)
+
+    html_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{ font-family: Arial, sans-serif; background-color: #f4f7fa; margin: 0; padding: 20px; }}
+            .container {{ max-width: 500px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }}
+            .header {{ background: linear-gradient(135deg, #15803d, #14532d); padding: 30px; text-align: center; }}
+            .header h1 {{ color: white; margin: 0; font-size: 22px; }}
+            .header p {{ color: rgba(255,255,255,0.85); margin: 8px 0 0; font-size: 14px; }}
+            .body {{ padding: 30px; }}
+            .greeting {{ font-size: 16px; color: #374151; margin-bottom: 16px; }}
+            .info {{ font-size: 14px; color: #6b7280; line-height: 1.6; }}
+            .badge {{ display: inline-block; background: #dcfce7; border: 1px solid #86efac; color: #15803d; border-radius: 999px; padding: 8px 18px; font-size: 13px; font-weight: 600; margin: 16px 0; }}
+            .steps {{ margin: 16px 0 0; padding-left: 18px; }}
+            .steps li {{ font-size: 13px; color: #4b5563; line-height: 1.8; }}
+            .footer {{ background: #f9fafb; padding: 20px; text-align: center; border-top: 1px solid #e5e7eb; }}
+            .footer p {{ font-size: 11px; color: #9ca3af; margin: 0; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🚛 Togo Truck Connect</h1>
+                <p>Votre compte est activé</p>
+            </div>
+            <div class="body">
+                <p class="greeting">Félicitations {user_name} !</p>
+                <p class="info">Votre dossier de vérification en tant que <strong>{role_label}</strong> a été validé par l'administration.</p>
+                <div class="badge">✓ Compte activé — Accès complet</div>
+                <p class="info">Vous pouvez maintenant :</p>
+                <ol class="steps">
+                    <li>Vous connecter à votre compte ;</li>
+                    <li>Accéder à l'ensemble des fonctionnalités de votre tableau de bord ;</li>
+                    <li>Déposer des offres, consulter les demandes et échanger avec la communauté.</li>
+                </ol>
+            </div>
+            <div class="footer">
+                <p>© 2026 Togo Truck Connect - Plateforme du transport routier au Togo</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    plain_body = f"""
+    Togo Truck Connect - Votre compte est activé
+
+    Félicitations {user_name},
+
+    Votre dossier de vérification en tant que {role_label} a été validé par l'administration.
+    Votre compte est désormais activé avec un accès complet à la plateforme.
+
+    Vous pouvez vous connecter et utiliser toutes les fonctionnalités de votre tableau de bord.
+    """
+
+    return _send_email(to_email, subject, html_body, plain_body)
+
+
 def send_verification_rejection_email(to_email: str, user_name: str, motif: str, role: str | None = None) -> bool:
     """
     Envoie un email à l'utilisateur pour l'informer du rejet de son dossier

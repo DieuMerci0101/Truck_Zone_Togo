@@ -58,12 +58,21 @@ async def lifespan(app: FastAPI):
 
         async with async_session() as db:
             result = await db.execute(select(func.count()).select_from(Country))
-            if result.scalar() == 0:
-                db.add_all([Country(**row) for row in countries_data()])
+            existing = await db.execute(select(Country.code))
+            existing_codes = {row[0] for row in existing.all()}
+            missing = [
+                row for row in countries_data() if row["code"] not in existing_codes
+            ]
+            if missing:
+                db.add_all([Country(**row) for row in missing])
                 await db.commit()
-                logger.info(f"🌍 {len(countries_data())} pays insérés dans la table countries")
+                logger.info(
+                    f"🌍 {len(missing)} pays manquants insérés (total attendu : {len(countries_data())})"
+                )
             else:
-                logger.info("ℹ️  Table countries déjà peuplée, skip seeding")
+                logger.info(
+                    f"ℹ️  Table countries à jour ({result.scalar()} pays), skip seeding"
+                )
     except Exception as e:
         logger.warning(f"⚠️  Erreur seeding pays (non bloquant): {e}")
 

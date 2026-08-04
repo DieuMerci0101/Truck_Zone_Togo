@@ -16,9 +16,7 @@ async def list_countries(db: AsyncSession = Depends(get_db)):
     formulaire d'inscription.
     """
     result = await db.execute(
-        select(Country)
-        .where(Country.is_active.is_(True))
-        .order_by(Country.sort_order.asc(), Country.name.asc())
+        select(Country).where(Country.is_active.is_(True)).order_by(Country.name.asc())
     )
     countries = result.scalars().all()
     return [
