@@ -554,6 +554,17 @@ async def list_verifications(
             proof = proof_by_user.get(str(u.id))
             docs = [proof] if proof and proof.get("fichier_url") else []
         submitted = {d["type_document"] for d in docs}
+        # Aplatit les groupes de documents requis en une liste de types simples
+        # (ex: [["permis"], ["cni","passeport"]] → ["permis","cni","passeport"]).
+        # Un groupe est considéré soumis dès que l'UN de ses types est présent,
+        # sinon tous les types du groupe sont marqués manquants.
+        required_flat: list[str] = []
+        missing_flat: list[str] = []
+        for group in required:
+            group_types = group if isinstance(group, (list, tuple, set)) else [group]
+            required_flat.extend(group_types)
+            if not any(t in submitted for t in group_types):
+                missing_flat.extend(group_types)
         submitted_dates = [d.get("created_at") for d in docs if d.get("created_at")]
         soumis_le = max(submitted_dates) if submitted_dates else (
             u.created_at.isoformat() if u.created_at else None
@@ -569,8 +580,8 @@ async def list_verifications(
                 "is_verified": u.is_verified,
                 "verification_status": u.verification_status,
                 "verification_reject_motif": u.verification_reject_motif,
-                "required_documents": required,
-                "missing_documents": [t for t in required if t not in submitted],
+                "required_documents": required_flat,
+                "missing_documents": missing_flat,
                 "documents": docs,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
                 "soumis_le": soumis_le,
