@@ -39,12 +39,18 @@ async def ensure_admin(db):
     result = await db.execute(select(User).where(User.email == ADMIN_EMAIL))
     existing = result.scalar_one_or_none()
     if existing:
-        if existing.role != UserRole.admin:
+        # Sécurise le compte existant : rôle admin + mot de passe par défaut
+        # correctement haché (récupération automatique si le hash diffère).
+        needs_fix = existing.role != UserRole.admin or not bcrypt.verify(
+            ADMIN_PASSWORD, existing.password_hash
+        )
+        if needs_fix:
             existing.role = UserRole.admin
+            existing.password_hash = bcrypt.hash(ADMIN_PASSWORD)
             existing.is_verified = True
             existing.is_active = True
             await db.flush()
-            print(f"✅ Rôle du compte existant corrigé en 'admin' : {ADMIN_EMAIL}")
+            print(f"✅ Compte admin réparé (rôle/mot de passe) : {ADMIN_EMAIL}")
         else:
             print(f"ℹ️  Compte admin déjà présent : {ADMIN_EMAIL}")
         return existing

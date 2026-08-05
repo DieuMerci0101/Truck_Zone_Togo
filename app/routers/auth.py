@@ -346,7 +346,7 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     if user_role(user) != "admin":
         raise HTTPException(
             status_code=403,
-            detail="Ce compte n'est pas un administrateur",
+            detail="Accès refusé. Privilèges administrateur requis.",
         )
 
     role = user_role(user)
