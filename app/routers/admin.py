@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,38 @@ from app.routers.auth import require_admin, user_role
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
+
+
+async def _send_admin_email(fn, *, to_email: str, log_label: str, **kwargs) -> bool:
+    """
+    Envoie un email admin via SMTP (thread dédié).
+    En cas d'échec RÉEL (connexion/TLS/auth/rejet), lève un HTTPException 500
+    avec le motif exact du serveur SMTP — jamais de statut persisté sans email parti.
+    """
+    from app.utils.email import EmailSendError, send_email_in_thread
+
+    try:
+        sent = await send_email_in_thread(fn, to_email=to_email, **kwargs)
+    except EmailSendError as exc:
+        logger.error("[ADMIN] %s vers %s : échec SMTP — %s", log_label, to_email, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Échec de l'envoi de l'e-mail ({log_label}) : {exc}. "
+                "Vérifiez MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD "
+                "(mot de passe d'application Gmail à 16 caractères) et MAIL_FROM."
+            ),
+        ) from exc
+    if not sent:
+        logger.error("[ADMIN] %s vers %s : SMTP non configuré.", log_label, to_email)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "SMTP non configuré : définissez MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, "
+                "MAIL_PASSWORD et MAIL_FROM sur le serveur."
+            ),
+        )
+    return sent
 
 
 # ─── Journal d'audit ────────────────────────────────
@@ -421,7 +453,7 @@ async def _apply_document_status(
     """
     from app.models.document import Document
     from app.utils.notifications import notify_user
-    from app.utils.email import send_email_in_thread, send_document_rejection_email
+    from app.utils.email import send_document_rejection_email
     from app.utils.verification import set_verification_status, APPROVED, REJECTED, REQUIRED_DOCS_BY_ROLE
     from sqlalchemy.orm import selectinload
 
@@ -490,24 +522,17 @@ async def _apply_document_status(
             # Synchronise le statut global du compte
             set_verification_status(user, REJECTED, motif=motif)
             doc_label = doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document
-            # Envoi SMTP réel (thread dédié) : en cas d'échec, 500 explicite et
-            # aucune persistance — jamais de « dossier rejeté » sans email parti.
-            email_sent = await send_email_in_thread(
+            # Envoi SMTP réel (thread dédié) : en cas d'échec, 500 explicite avec
+            # le motif exact et aucune persistance — jamais de « dossier rejeté »
+            # sans email parti.
+            await _send_admin_email(
                 send_document_rejection_email,
                 to_email=user.email,
+                log_label="rejet de document",
                 user_name=user.nom_complet or "",
                 document_type=doc_label,
                 motif=motif,
             )
-            if not email_sent:
-                logger.error(
-                    "[ADMIN] Échec de l'envoi de l'email de rejet de document à %s — statut non persisté.",
-                    user.email,
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail="Impossible d'envoyer l'e-mail de rejet. Vérifiez la configuration SMTP.",
-                )
 
     await db.commit()
     return {"message": f"Statut du document mis à jour : {statut}"}
@@ -602,7 +627,6 @@ async def verify_mechanic(
     from sqlalchemy.orm import selectinload
     from app.utils.notifications import notify_user
     from app.utils.email import (
-        send_email_in_thread,
         send_verification_rejection_email,
         send_verification_approved_email,
     )
@@ -636,21 +660,13 @@ async def verify_mechanic(
                 type_notif="document",
                 lien=lien,
             )
-            email_sent = await send_email_in_thread(
+            await _send_admin_email(
                 send_verification_approved_email,
                 to_email=profil.user.email,
+                log_label="approbation mécanicien",
                 user_name=profil.user.nom_complet or "",
                 role="mecanicien",
             )
-            if not email_sent:
-                logger.error(
-                    "[ADMIN] Échec de l'envoi de l'email d'approbation mécanicien à %s — statut non persisté.",
-                    profil.user.email,
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail="Impossible d'envoyer l'e-mail d'approbation. Vérifiez la configuration SMTP.",
-                )
     else:
         profil.verification_status = "rejected"
         if profil.user:
@@ -663,22 +679,14 @@ async def verify_mechanic(
                 type_notif="document",
                 lien=lien,
             )
-            email_sent = await send_email_in_thread(
+            await _send_admin_email(
                 send_verification_rejection_email,
                 to_email=profil.user.email,
+                log_label="rejet mécanicien",
                 user_name=profil.user.nom_complet or "",
                 motif=motif,
                 role="mecanicien",
             )
-            if not email_sent:
-                logger.error(
-                    "[ADMIN] Échec de l'envoi de l'email de rejet mécanicien à %s — statut non persisté.",
-                    profil.user.email,
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail="Impossible d'envoyer l'e-mail de rejet. Vérifiez la configuration SMTP.",
-                )
 
     await db.commit()
     return {
@@ -822,7 +830,6 @@ async def decide_verification(
     """
     from app.utils.notifications import notify_user
     from app.utils.email import (
-        send_email_in_thread,
         send_verification_rejection_email,
         send_verification_approved_email,
     )
@@ -871,21 +878,13 @@ async def decide_verification(
             type_notif="document",
             lien=f"/dashboard/{role}",
         )
-        email_sent = await send_email_in_thread(
+        await _send_admin_email(
             send_verification_approved_email,
             to_email=user.email,
+            log_label="approbation de compte",
             user_name=user.nom_complet or "",
             role=role,
         )
-        if not email_sent:
-            logger.error(
-                "[ADMIN] Échec de l'envoi de l'email d'approbation à %s — statut non persisté.",
-                user.email,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Impossible d'envoyer l'e-mail d'approbation. Vérifiez la configuration SMTP.",
-            )
         message = f"Compte de {user.nom_complet} validé avec succès"
     else:
         set_verification_status(user, REJECTED, motif=motif)
@@ -914,22 +913,14 @@ async def decide_verification(
             type_notif="document",
             lien=f"/dashboard/{role}",
         )
-        email_sent = await send_email_in_thread(
+        await _send_admin_email(
             send_verification_rejection_email,
             to_email=user.email,
+            log_label="rejet de compte",
             user_name=user.nom_complet or "",
             motif=motif,
             role=role,
         )
-        if not email_sent:
-            logger.error(
-                "[ADMIN] Échec de l'envoi de l'email de rejet à %s — statut non persisté.",
-                user.email,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Impossible d'envoyer l'e-mail de rejet. Vérifiez la configuration SMTP.",
-            )
         message = f"Compte de {user.nom_complet} rejeté"
 
     await db.commit()
@@ -962,3 +953,71 @@ async def list_all_incidents(
     result = await db.execute(query)
     incidents = result.scalars().all()
     return [IncidentOut.model_validate(i) for i in incidents]
+
+
+# ─── Diagnostic SMTP de production ──────────────────
+
+
+class EmailTestResult(BaseModel):
+    configured: bool
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    from_addr: str
+    ok: bool
+    message: str
+    error: str | None = None
+
+
+@router.post("/test-email", response_model=EmailTestResult)
+async def test_smtp_config(
+    to_email: EmailStr | None = None,
+    admin: User = Depends(require_admin),
+):
+    """
+    Diagnostic SMTP de production : tente un envoi réel via le serveur SMTP
+    configuré et renvoie l'erreur EXACTE (authentification Gmail refusée,
+    TLS, DNS, port bloqué...) en cas d'échec. Réservé aux administrateurs.
+
+    Utilisation : POST /api/admin/test-email  (optionnel : ?to_email=adresse)
+    """
+    from app.config import get_settings
+    from app.utils.email import (
+        EmailSendError,
+        _resolve_from,
+        _smtp_is_configured,
+        send_email_in_thread,
+        send_welcome_email,
+    )
+
+    settings = get_settings()
+    recipient = to_email or (settings.smtp_user or admin.email)
+    base = {
+        "configured": _smtp_is_configured(settings),
+        "smtp_host": settings.smtp_host,
+        "smtp_port": settings.smtp_port,
+        "smtp_user": settings.smtp_user,
+        "from_addr": _resolve_from(settings),
+    }
+    if not base["configured"]:
+        return EmailTestResult(
+            **base,
+            ok=False,
+            message="SMTP non configuré",
+            error=(
+                "Variables manquantes : MAIL_SERVER/SMTP_HOST, MAIL_PORT/SMTP_PORT, "
+                "MAIL_USERNAME/SMTP_USER et MAIL_PASSWORD/SMTP_PASSWORD."
+            ),
+        )
+    try:
+        await send_email_in_thread(send_welcome_email, recipient, "Test SMTP")
+    except EmailSendError as exc:
+        logger.error("[ADMIN] Test SMTP échoué : %s", exc)
+        return EmailTestResult(
+            **base, ok=False, message="Échec SMTP", error=str(exc)
+        )
+    return EmailTestResult(
+        **base,
+        ok=True,
+        message=f"Email de test envoyé à {recipient} — vérifiez la boîte de réception.",
+    )

@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.models.otp import OTPReset
-from app.utils.email import send_email_in_thread, send_otp_email
+from app.utils.email import EmailSendError, send_email_in_thread, send_otp_email
 from app.utils.verification import PENDING_UPLOAD
 
 logger = logging.getLogger(__name__)
@@ -532,19 +532,36 @@ async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_d
     await db.flush()
 
     # Envoi SMTP réel dans un thread dédié (pas de blocage de l'event loop).
-    # En cas d'échec : 500 explicite — JAMAIS de message de succès sans email parti.
-    email_sent = await send_email_in_thread(
-        send_otp_email, user.email, otp_code, user.nom_complet
-    )
+    # En cas d'échec : 500 explicite avec le motif exact — JAMAIS de message
+    # de succès sans email parti.
+    try:
+        email_sent = await send_email_in_thread(
+            send_otp_email, user.email, otp_code, user.nom_complet
+        )
+    except EmailSendError as exc:
+        logger.error(
+            "[AUTH] Échec SMTP OTP vers %s : %s", user.email, exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Échec de l'envoi de l'e-mail de vérification : {exc}. "
+                "Vérifiez MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD "
+                "(mot de passe d'application Gmail à 16 caractères) et MAIL_FROM."
+            ),
+        ) from exc
+
     if not email_sent:
         logger.error(
-            "[AUTH] Échec de l'envoi de l'OTP à %s — l'OTP n'est pas persisté, "
-            "aucune réponse de succès renvoyée.",
+            "[AUTH] SMTP non configuré pour l'OTP vers %s — aucun envoi possible.",
             user.email,
         )
         raise HTTPException(
             status_code=500,
-            detail="Impossible d'envoyer l'e-mail de vérification. Vérifiez la configuration SMTP (MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_FROM).",
+            detail=(
+                "SMTP non configuré : définissez MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, "
+                "MAIL_PASSWORD (mot de passe d'application Gmail) et MAIL_FROM."
+            ),
         )
 
     return {"message": f"Un code OTP a été envoyé à {data.email}"}

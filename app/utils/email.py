@@ -17,6 +17,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class EmailSendError(Exception):
+    """Échec RÉEL d'envoi SMTP (connexion, TLS, authentification, rejet serveur).
+    Transporte le message d'erreur brut du serveur SMTP pour le diagnostic.
+    """
+
+
 def _resolve_from(settings) -> str:
     """Expéditeur réel de l'email : EMAIL_FROM explicite, sinon le compte SMTP
     authentifié (MAIL_USERNAME / SMTP_USER) — recommandé avec Gmail."""
@@ -110,6 +116,8 @@ def _send_email(to_email: str, subject: str, html_body: str, plain_body: str | N
                 server.sendmail(from_addr, to_email, msg.as_string())
         logger.info("[EMAIL] Envoyé « %s » à %s", subject, to_email)
         return True
+    except EmailSendError:
+        raise
     except Exception as exc:
         logger.error(
             "[EMAIL] Échec de l'envoi « %s » à %s : %s\n%s",
@@ -118,7 +126,9 @@ def _send_email(to_email: str, subject: str, html_body: str, plain_body: str | N
             exc,
             traceback.format_exc(),
         )
-        return False
+        # Propager l'erreur SMTP réelle : le caller décide de renvoyer un 500
+        # explicite (fini les « faux positifs » : succès sans email parti).
+        raise EmailSendError(f"{type(exc).__name__}: {exc}") from exc
 
 
 def send_otp_email(to_email: str, otp_code: str, user_name: str = "") -> bool:

@@ -76,8 +76,9 @@ class Settings(BaseSettings):
         # Si vide, l'email est envoyé depuis `smtp_user` (MAIL_USERNAME / SMTP_USER).
         # Avec Gmail, utiliser l'adresse du compte authentifié améliore la
         # délivrabilité (SPF/DKIM alignés) — éviter les domaines tiers.
+        # Accepte EMAIL_FROM, MAIL_FROM, SMTP_FROM (doc de déploiement) ou MAIL_DEFAULT_SENDER.
         default="",
-        validation_alias=AliasChoices("email_from", "EMAIL_FROM", "MAIL_FROM", "MAIL_DEFAULT_SENDER"),
+        validation_alias=AliasChoices("email_from", "EMAIL_FROM", "MAIL_FROM", "SMTP_FROM", "MAIL_DEFAULT_SENDER"),
     )
 
     # ==========================

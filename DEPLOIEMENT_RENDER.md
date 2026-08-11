@@ -243,11 +243,39 @@ Toutes les variables ci-dessous doivent etre configurees dans Render
 | `SMTP_HOST` | `smtp.gmail.com` | Serveur SMTP (Gmail par defaut) |
 | `SMTP_PORT` | `587` | Port SMTP (TLS) |
 | `SMTP_USER` | `votre-email@gmail.com` | Adresse email d'envoi |
-| `SMTP_PASSWORD` | `xxxx-xxxx-xxxx-xxxx` | Mot de passe d'application Gmail (pas le mot de passe principal) |
-| `SMTP_FROM` | `TruckZone Togo <noreply@truckzone-togo.com>` | Adresse d'affichage de l'expediteur |
+| `SMTP_PASSWORD` | `xxxx-xxxx-xxxx-xxxx` | Mot de passe d'application Gmail (16 caracteres, **pas** le mot de passe principal) |
+| `SMTP_FROM` | `votre-email@gmail.com` | Expediteur de l'email (vide = compte SMTP authentifie) |
 
 > **Pour Gmail :** Activez la verification en 2 etapes, puis generez un
-> **mot de passe d'application** dans les parametres de securite Google.
+> **mot de passe d'application** dans les parametres de securite Google
+> (https://myaccount.google.com/apppasswords). Copiez-le SANS espaces.
+>
+> **Astuce de delivrabilite :** Gmail refuse souvent les envois dont l'adresse
+> `From` ne lui appartient pas (SPF/DKIM non alignes). Laissez `SMTP_FROM` vide
+> (ou = `SMTP_USER`) pour envoyer depuis l'adresse Gmail authentifiee, ou
+> configurez SPF/DKIM sur votre domaine avant d'utiliser `noreply@votre-domaine.com`.
+>
+> **Alias supportes :** `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USERNAME`,
+> `MAIL_PASSWORD`, `MAIL_FROM` fonctionnent aussi (compatibles Flask-Mail).
+
+#### Diagnostic SMTP en production
+
+Si un envoi echoue, le backend repond **HTTP 500 avec le motif exact**
+(connexion, TLS, authentification `535`, rejet serveur...). Pour tester
+directement depuis Render :
+
+```bash
+# Remplacez <TOKEN_ADMIN> par un JWT d'administrateur.
+curl -X POST https://truck-zone-togo.onrender.com/api/admin/test-email \
+  -H "Authorization: Bearer <TOKEN_ADMIN>" \
+  -H "Content-Type: application/json"
+# Réponse si échec :
+# { "configured": true, "smtp_host": "...", ..., "ok": false, "error": "SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted...')" }
+```
+
+Un `535 5.7.8 Username and Password not accepted` = mot de passe incorrect ou
+mot de passe d'application recree (revoke) : corrigez `SMTP_PASSWORD` sur Render
+et redepartez le service.
 
 ### 2.4 Stockage fichiers (MinIO)
 
