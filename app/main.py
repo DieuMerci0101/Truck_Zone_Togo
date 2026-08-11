@@ -110,16 +110,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-ALLOWED_ORIGINS = [
+# Origines CORS autorisées : lues depuis la variable d'environnement
+# `ALLOWED_ORIGINS` (liste séparée par des virgules), avec repli sur les
+# valeurs par défaut (production Vercel + localhost).
+_ALLOWED_ORIGINS_DEFAULT = [
     "https://frontend-truck-zone-togo.vercel.app",
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
     "https://truck-zone-togo.onrender.com",
 ]
+
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", settings.allowed_origins).split(",")
+    if origin.strip()
+] or _ALLOWED_ORIGINS_DEFAULT
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"https://.*\.onrender\.com",
+    allow_origin_regex=r"https://.*\.(onrender\.com|vercel\.app)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

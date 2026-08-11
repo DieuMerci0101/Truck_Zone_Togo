@@ -1,9 +1,16 @@
 venv/
 .env
 .env.*
+!.env.example
 __pycache__/
 *.pyc
+*.pyo
 .vscode/
 .idea/
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+logs/
+*.log
 uploads/
-!.env.example

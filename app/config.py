@@ -95,6 +95,18 @@ class Settings(BaseSettings):
     # ==========================
     next_public_api_url: str = "http://localhost:8000"
 
+    # ==========================
+    # CORS — origines autorisées
+    # Liste séparée par des virgules (env `ALLOWED_ORIGINS`), ou valeurs par
+    # défaut : frontend Vercel de production + environnements locaux.
+    # ==========================
+    allowed_origins: str = (
+        "https://frontend-truck-zone-togo.vercel.app,"
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "https://truck-zone-togo.onrender.com"
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
