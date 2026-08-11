@@ -93,7 +93,13 @@ class Settings(BaseSettings):
     # ==========================
     # API
     # ==========================
-    next_public_api_url: str = "http://localhost:8000"
+    next_public_api_url: str = "https://truck-zone-togo.onrender.com"
+
+    # ==========================
+    # Frontend — URL publique utilisée dans les emails et redirections.
+    # Surchargée par la variable d'environnement `FRONTEND_URL`.
+    # ==========================
+    frontend_url: str = "https://frontend-truck-zone-togo.vercel.app"
 
     # ==========================
     # CORS — origines autorisées
