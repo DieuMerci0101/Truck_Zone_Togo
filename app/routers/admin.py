@@ -14,10 +14,11 @@ from app.routers.auth import require_admin, user_role
         ...
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,8 @@ from app.models.camion import Camion
 from app.schemas.incident import IncidentOut
 from app.schemas.mecanicien import AssistanceOut, MecanicienVerificationUpdate
 from app.routers.auth import require_admin, user_role
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
@@ -376,7 +379,6 @@ class DocumentRejectUpdate(BaseModel):
 @router.patch("/documents/{document_id}/approve")
 async def approve_document(
     document_id: uuid.UUID,
-    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -385,14 +387,13 @@ async def approve_document(
     lorsque tous les documents requis sont validés.
     Protégé : uniquement les administrateurs.
     """
-    return await _apply_document_status(db, document_id, "valide", background_tasks=background_tasks)
+    return await _apply_document_status(db, document_id, "valide")
 
 
 @router.patch("/documents/{document_id}/reject")
 async def reject_document(
     document_id: uuid.UUID,
     body: DocumentRejectUpdate,
-    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -404,7 +405,7 @@ async def reject_document(
     motif = (body.motif or body.rejection_reason or "").strip()
     if not motif:
         raise HTTPException(status_code=422, detail="Un motif de rejet est obligatoire")
-    return await _apply_document_status(db, document_id, "rejete", motif, background_tasks=background_tasks)
+    return await _apply_document_status(db, document_id, "rejete", motif)
 
 
 async def _apply_document_status(
@@ -412,7 +413,6 @@ async def _apply_document_status(
     document_id: uuid.UUID,
     statut: str,
     motif: str | None = None,
-    background_tasks: BackgroundTasks | None = None,
 ):
     """
     Applique un changement de statut sur un document et gère les effets de bord :
@@ -421,7 +421,7 @@ async def _apply_document_status(
     """
     from app.models.document import Document
     from app.utils.notifications import notify_user
-    from app.utils.email import email_task, send_document_rejection_email
+    from app.utils.email import send_email_in_thread, send_document_rejection_email
     from app.utils.verification import set_verification_status, APPROVED, REJECTED, REQUIRED_DOCS_BY_ROLE
     from sqlalchemy.orm import selectinload
 
@@ -490,25 +490,25 @@ async def _apply_document_status(
             # Synchronise le statut global du compte
             set_verification_status(user, REJECTED, motif=motif)
             doc_label = doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document
-            if background_tasks is not None:
-                background_tasks.add_task(
-                    email_task,
-                    send_document_rejection_email,
-                    to_email=user.email,
-                    user_name=user.nom_complet or "",
-                    document_type=doc_label,
-                    motif=motif,
+            # Envoi SMTP réel (thread dédié) : en cas d'échec, 500 explicite et
+            # aucune persistance — jamais de « dossier rejeté » sans email parti.
+            email_sent = await send_email_in_thread(
+                send_document_rejection_email,
+                to_email=user.email,
+                user_name=user.nom_complet or "",
+                document_type=doc_label,
+                motif=motif,
+            )
+            if not email_sent:
+                logger.error(
+                    "[ADMIN] Échec de l'envoi de l'email de rejet de document à %s — statut non persisté.",
+                    user.email,
                 )
-            else:
-                send_document_rejection_email(
-                    to_email=user.email,
-                    user_name=user.nom_complet or "",
-                    document_type=doc_label,
-                    motif=motif,
+                raise HTTPException(
+                    status_code=500,
+                    detail="Impossible d'envoyer l'e-mail de rejet. Vérifiez la configuration SMTP.",
                 )
 
-    # Commit explicite AVANT le retour : garantit la persistance indépendamment
-    # de l'ordre d'exécution des tâches de fond.
     await db.commit()
     return {"message": f"Statut du document mis à jour : {statut}"}
 
@@ -591,7 +591,6 @@ async def list_pending_mechanics(
 async def verify_mechanic(
     mecanicien_id: uuid.UUID,
     body: MecanicienVerificationUpdate,
-    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -603,7 +602,7 @@ async def verify_mechanic(
     from sqlalchemy.orm import selectinload
     from app.utils.notifications import notify_user
     from app.utils.email import (
-        email_task,
+        send_email_in_thread,
         send_verification_rejection_email,
         send_verification_approved_email,
     )
@@ -637,13 +636,21 @@ async def verify_mechanic(
                 type_notif="document",
                 lien=lien,
             )
-            background_tasks.add_task(
-                email_task,
+            email_sent = await send_email_in_thread(
                 send_verification_approved_email,
                 to_email=profil.user.email,
                 user_name=profil.user.nom_complet or "",
                 role="mecanicien",
             )
+            if not email_sent:
+                logger.error(
+                    "[ADMIN] Échec de l'envoi de l'email d'approbation mécanicien à %s — statut non persisté.",
+                    profil.user.email,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Impossible d'envoyer l'e-mail d'approbation. Vérifiez la configuration SMTP.",
+                )
     else:
         profil.verification_status = "rejected"
         if profil.user:
@@ -656,17 +663,23 @@ async def verify_mechanic(
                 type_notif="document",
                 lien=lien,
             )
-            background_tasks.add_task(
-                email_task,
+            email_sent = await send_email_in_thread(
                 send_verification_rejection_email,
                 to_email=profil.user.email,
                 user_name=profil.user.nom_complet or "",
                 motif=motif,
                 role="mecanicien",
             )
+            if not email_sent:
+                logger.error(
+                    "[ADMIN] Échec de l'envoi de l'email de rejet mécanicien à %s — statut non persisté.",
+                    profil.user.email,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Impossible d'envoyer l'e-mail de rejet. Vérifiez la configuration SMTP.",
+                )
 
-    # Commit explicite AVANT le retour : garantit la persistance indépendamment
-    # de l'ordre d'exécution des tâches de fond.
     await db.commit()
     return {
         "message": f"Vérification du mécanicien : {body.statut}",
@@ -798,7 +811,6 @@ async def list_verifications(
 async def decide_verification(
     user_id: uuid.UUID,
     body: VerificationDecision,
-    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -810,7 +822,7 @@ async def decide_verification(
     """
     from app.utils.notifications import notify_user
     from app.utils.email import (
-        email_task,
+        send_email_in_thread,
         send_verification_rejection_email,
         send_verification_approved_email,
     )
@@ -859,13 +871,21 @@ async def decide_verification(
             type_notif="document",
             lien=f"/dashboard/{role}",
         )
-        background_tasks.add_task(
-            email_task,
+        email_sent = await send_email_in_thread(
             send_verification_approved_email,
             to_email=user.email,
             user_name=user.nom_complet or "",
             role=role,
         )
+        if not email_sent:
+            logger.error(
+                "[ADMIN] Échec de l'envoi de l'email d'approbation à %s — statut non persisté.",
+                user.email,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Impossible d'envoyer l'e-mail d'approbation. Vérifiez la configuration SMTP.",
+            )
         message = f"Compte de {user.nom_complet} validé avec succès"
     else:
         set_verification_status(user, REJECTED, motif=motif)
@@ -894,18 +914,24 @@ async def decide_verification(
             type_notif="document",
             lien=f"/dashboard/{role}",
         )
-        background_tasks.add_task(
-            email_task,
+        email_sent = await send_email_in_thread(
             send_verification_rejection_email,
             to_email=user.email,
             user_name=user.nom_complet or "",
             motif=motif,
             role=role,
         )
+        if not email_sent:
+            logger.error(
+                "[ADMIN] Échec de l'envoi de l'email de rejet à %s — statut non persisté.",
+                user.email,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Impossible d'envoyer l'e-mail de rejet. Vérifiez la configuration SMTP.",
+            )
         message = f"Compte de {user.nom_complet} rejeté"
 
-    # Commit explicite AVANT le retour : garantit la persistance indépendamment
-    # de l'ordre d'exécution des tâches de fond.
     await db.commit()
     return {
         "message": message,

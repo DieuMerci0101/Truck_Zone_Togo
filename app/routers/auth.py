@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.hash import bcrypt
@@ -15,8 +16,10 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.models.otp import OTPReset
-from app.utils.email import email_task, send_otp_email
+from app.utils.email import send_email_in_thread, send_otp_email
 from app.utils.verification import PENDING_UPLOAD
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -501,11 +504,7 @@ async def change_password(
 
 
 @router.post("/forgot-password")
-async def forgot_password(
-    data: ForgotPassword,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-):
+async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
 
@@ -530,13 +529,23 @@ async def forgot_password(
         attempts=0,
     )
     db.add(otp)
+    await db.flush()
 
-    # Persister l'OTP AVANT l'envoi : l'email part en arrière-plan (thread
-    # dédié) et son échec ne doit ni perdre le code, ni faire échouer la
-    # requête (fini le 500 si SMTP indisponible).
-    await db.commit()
-
-    background_tasks.add_task(email_task, send_otp_email, user.email, otp_code, user.nom_complet)
+    # Envoi SMTP réel dans un thread dédié (pas de blocage de l'event loop).
+    # En cas d'échec : 500 explicite — JAMAIS de message de succès sans email parti.
+    email_sent = await send_email_in_thread(
+        send_otp_email, user.email, otp_code, user.nom_complet
+    )
+    if not email_sent:
+        logger.error(
+            "[AUTH] Échec de l'envoi de l'OTP à %s — l'OTP n'est pas persisté, "
+            "aucune réponse de succès renvoyée.",
+            user.email,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Impossible d'envoyer l'e-mail de vérification. Vérifiez la configuration SMTP (MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_FROM).",
+        )
 
     return {"message": f"Un code OTP a été envoyé à {data.email}"}
 

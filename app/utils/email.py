@@ -52,6 +52,16 @@ async def email_task(func, *args, **kwargs) -> None:
         logger.error("[EMAIL] Erreur inattendue lors de l'envoi en arrière-plan.", exc_info=True)
 
 
+async def send_email_in_thread(func, *args, **kwargs) -> bool:
+    """
+    Exécute un envoi SMTP bloquant dans un thread dédié (hors de l'event loop)
+    et RETOURNE le résultat réel de l'envoi (True/False) au lieu de le masquer.
+    Le caller peut ainsi renvoyer une erreur HTTP 500 explicite en cas d'échec
+    SMTP (fini les « faux positifs » : succès affiché alors qu'aucun email n'est parti).
+    """
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
 def _send_email(to_email: str, subject: str, html_body: str, plain_body: str | None = None) -> bool:
     """
     Envoie un email via SMTP (STARTTLS port 587/25, ou SSL port 465).
