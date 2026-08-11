@@ -144,9 +144,14 @@ class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     confirm_password: str
-    # Numéro au format international E.164 : + <indicatif> <numéro national>
-    # (ex: +22870118993). L'indicatif est vérifié contre la table `countries`.
-    telephone: str = Field(..., pattern=r"^\+[1-9]\d{6,14}$")
+    # Pays sélectionné dans le formulaire (table `countries`) + numéro national.
+    # Le numéro complet (E.164) est reconstitué côté serveur avec l'indicatif.
+    country_id: uuid.UUID = Field(...)
+    phone_number: str = Field(..., min_length=3, max_length=15)
+    # Rétrocompatibilité : ancien champ "telephone" (E.164 complet) si fourni.
+    telephone: str | None = Field(
+        default=None, pattern=r"^\+[1-9]\d{6,14}$"
+    )
     role: str = Field(..., pattern=r"^(chauffeur|proprietaire|mecanicien)$")
 
     def passwords_match(self):
@@ -196,8 +201,10 @@ class UserOut(BaseModel):
     email: str
     nom_complet: str
     telephone: str
+    country_id: uuid.UUID | None = None
     role: str
     photo_profil: str | None = None
+    photo_profil_version: int = 0
     date_naissance: str | None = None
     lieu_naissance: str | None = None
     adresse: str | None = None
@@ -229,18 +236,47 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     if data.role == "admin":
         raise HTTPException(status_code=403, detail="Accès refusé")
 
-    # L'indicatif international doit correspondre à un pays actif.
     from app.models.country import Country
+    from app.utils.phone import build_e164, is_valid_national_number
 
-    result = await db.execute(
-        select(Country.phone_code).where(Country.is_active.is_(True))
+    # 1) Le pays sélectionné doit exister et être actif.
+    country_result = await db.execute(
+        select(Country).where(
+            Country.id == data.country_id, Country.is_active.is_(True)
+        )
     )
-    phone_codes = result.scalars().all()
-    if not any(data.telephone.startswith(code) for code in phone_codes):
+    country = country_result.scalar_one_or_none()
+    if not country:
         raise HTTPException(
             status_code=400,
-            detail="Indicatif international invalide. Veuillez sélectionner un pays valide.",
+            detail="Pays invalide. Veuillez sélectionner un pays valide.",
         )
+
+    # 2) Reconstruction du numéro complet : indicatif du pays + numéro national.
+    if data.telephone:
+        # Rétrocompatibilité : l'ancien champ E.164 reste prioritaire.
+        telephone = data.telephone
+        from app.utils.phone import national_digits
+
+        if not any(
+            telephone.startswith(code)
+            for code in (
+                await db.execute(
+                    select(Country.phone_code).where(Country.is_active.is_(True))
+                )
+            ).scalars().all()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Indicatif international invalide. Veuillez sélectionner un pays valide.",
+            )
+    else:
+        if not is_valid_national_number(country, data.phone_number):
+            raise HTTPException(
+                status_code=400,
+                detail="Veuillez saisir un numéro de téléphone valide pour le pays sélectionné.",
+            )
+        telephone = build_e164(country, data.phone_number)
 
     existing = await db.execute(select(User).where(User.email == data.email))
     if existing.scalar_one_or_none():
@@ -251,7 +287,8 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
         email=data.email,
         password_hash=bcrypt.hash(data.password),
         nom_complet=data.nom_complet,
-        telephone=data.telephone,
+        telephone=telephone,
+        country_id=country.id,
         role=data.role,
         is_verified=False,
         is_active=True,
@@ -281,6 +318,17 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
                 photo_url=None,
             )
         )
+
+    from app.services.audit import log_action
+
+    await log_action(
+        db,
+        user_id=str(user.id),
+        action="REGISTER",
+        target_type="user",
+        target_id=str(user.id),
+        details={"role": data.role, "email": user.email, "pays": str(country.id)},
+    )
 
     return user
 
@@ -315,8 +363,10 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "email": user.email,
             "nom_complet": user.nom_complet,
             "telephone": user.telephone,
+            "country_id": str(user.country_id) if user.country_id else None,
             "role": role,
             "photo_profil": user.photo_profil,
+            "photo_profil_version": user.photo_profil_version,
             "date_naissance": user.date_naissance,
             "lieu_naissance": user.lieu_naissance,
             "adresse": user.adresse,
@@ -361,8 +411,10 @@ async def admin_login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             "email": user.email,
             "nom_complet": user.nom_complet,
             "telephone": user.telephone,
+            "country_id": str(user.country_id) if user.country_id else None,
             "role": role,
             "photo_profil": user.photo_profil,
+            "photo_profil_version": user.photo_profil_version,
             "date_naissance": user.date_naissance,
             "lieu_naissance": user.lieu_naissance,
             "adresse": user.adresse,
@@ -552,6 +604,8 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
             "id": str(user.id),
             "email": user.email,
             "nom_complet": user.nom_complet,
+            "telephone": user.telephone,
+            "country_id": str(user.country_id) if user.country_id else None,
             "role": role,
             "is_verified": user.is_verified,
             "is_active": user.is_active,

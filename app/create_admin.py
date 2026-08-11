@@ -89,8 +89,8 @@ from passlib.hash import bcrypt  # type: ignore
 # ──────────────────────────────────────────────────────────
 # Configuration du premier administrateur
 # ──────────────────────────────────────────────────────────
-ADMIN_EMAIL = "admin@togotruckconnect.com"
-ADMIN_PASSWORD = "Admin@123"  # À changer en production !
+ADMIN_EMAIL = "admin@togotruck.com"
+ADMIN_PASSWORD = "AdminPassword123!"  # À changer en production !
 ADMIN_NOM = "Admin TogoTruck"
 ADMIN_TELEPHONE = "+22890123456"
 

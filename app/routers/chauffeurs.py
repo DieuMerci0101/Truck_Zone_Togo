@@ -15,6 +15,8 @@ from app.models.camion_photo import CamionPhoto
 from app.models.document import Document
 from app.models.enums import CategoriePermis, DisponibiliteChauffeur, TypeDocument
 from app.routers.auth import get_current_user
+from app.services.audit import log_action
+from app.services.storage import delete_upload, save_upload
 from app.schemas.chauffeur import (
     DisponibiliteUpdate,
     ProfilChauffeurCreate,
@@ -357,6 +359,20 @@ async def create_camion(
     await db.flush()
     await db.refresh(camion)
 
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="ADD_TRUCK",
+        target_type="camion",
+        target_id=str(camion.id),
+        details={
+            "immatriculation": camion.immatriculation,
+            "marque": camion.marque,
+            "modele": camion.modele,
+            "is_public": camion.is_public,
+        },
+    )
+
     result = await db.execute(
         select(Camion)
         .options(selectinload(Camion.photos))
@@ -418,6 +434,15 @@ async def update_camion(
     await db.flush()
     await db.refresh(camion)
 
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="UPDATE_TRUCK",
+        target_type="camion",
+        target_id=str(camion.id),
+        details=update_data,
+    )
+
     result = await db.execute(
         select(Camion)
         .options(selectinload(Camion.photos))
@@ -433,6 +458,24 @@ async def delete_camion(
     db: AsyncSession = Depends(get_db),
 ):
     camion = await _verify_chauffeur_camion(current_user, camion_id, db)
+
+    # Suppression explicite : les fichiers photos physiques sont aussi
+    # supprimés (contrairement au nettoyage automatique qui n'existe pas).
+    photos = await db.execute(
+        select(CamionPhoto).where(CamionPhoto.camion_id == camion.id)
+    )
+    for photo in photos.scalars().all():
+        delete_upload(photo.photo_url)
+
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="DELETE_TRUCK",
+        target_type="camion",
+        target_id=str(camion.id),
+        details={"immatriculation": camion.immatriculation},
+    )
+
     await db.delete(camion)
     await db.flush()
     return {"message": "Camion supprimé"}
@@ -462,23 +505,28 @@ async def upload_camion_photo(
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 5 Mo")
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    with open(filepath, "wb") as f:
-        f.write(content)
+    photo_url = save_upload(content, "camions", ext)
 
     is_first = count == 0
     photo = CamionPhoto(
         id=uuid.uuid4(),
         camion_id=camion.id,
-        photo_url=f"/uploads/camions/{filename}",
+        photo_url=photo_url,
         est_principale=is_first,
     )
     db.add(photo)
 
     if is_first:
         camion.photo_principale_url = photo.photo_url
+
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="ADD_TRUCK_PHOTO",
+        target_type="camion",
+        target_id=str(camion.id),
+        details={"photo_url": photo_url, "est_principale": is_first},
+    )
 
     await db.flush()
     return {"id": str(photo.id), "message": "Photo uploadée", "url": photo.photo_url, "est_principale": is_first}
@@ -499,14 +547,20 @@ async def delete_camion_photo(
     if not photo:
         raise HTTPException(status_code=404, detail="Photo non trouvée")
 
-    if photo.photo_url and photo.photo_url.startswith("/uploads/"):
-        file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), photo.photo_url.lstrip("/"))
-        if os.path.exists(file_path):
-            os.remove(file_path)
+    delete_upload(photo.photo_url)
 
     was_main = photo.est_principale
     await db.delete(photo)
     await db.flush()
+
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="DELETE_TRUCK_PHOTO",
+        target_type="camion",
+        target_id=str(camion_id),
+        details={"photo_url": photo.photo_url},
+    )
 
     if was_main:
         next_photo = await db.execute(
@@ -550,6 +604,16 @@ async def set_main_photo(
     photo.est_principale = True
     camion.photo_principale_url = photo.photo_url
     await db.flush()
+
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="SET_TRUCK_MAIN_PHOTO",
+        target_type="camion",
+        target_id=str(camion.id),
+        details={"photo_url": photo.photo_url},
+    )
+
     return {"message": "Photo principale mise à jour"}
 
 
@@ -586,6 +650,16 @@ async def toggle_publish_camion(
 
     camion.is_public = not camion.is_public
     await db.flush()
+
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="PUBLISH_TRUCK" if camion.is_public else "UNPUBLISH_TRUCK",
+        target_type="camion",
+        target_id=str(camion.id),
+        details={"is_public": camion.is_public},
+    )
+
     return {"message": f"Camion {'publié' if camion.is_public else 'dépublié'}", "is_public": camion.is_public}
 
 

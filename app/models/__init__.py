@@ -40,6 +40,7 @@ from app.models.assistance import DemandeAssistance
 from app.models.candidature import Candidature
 from app.models.notification import Notification
 from app.models.photo_profil import PhotoProfil
+from app.models.audit_log import AuditLog
 
 __all__ = [
     "Base",
@@ -63,6 +64,7 @@ __all__ = [
     "Candidature",
     "Notification",
     "PhotoProfil",
+    "AuditLog",
     # Enums
     "UserRole",
     "CategoriePermis",

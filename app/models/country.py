@@ -1,11 +1,15 @@
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Integer, String, func  # type: ignore
 from sqlalchemy.dialects.postgresql import UUID  # type: ignore
-from sqlalchemy.orm import Mapped, mapped_column  # type: ignore
+from sqlalchemy.orm import Mapped, mapped_column, relationship  # type: ignore
 
 from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.user import User
 
 
 class Country(Base):
@@ -30,3 +34,6 @@ class Country(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+    # Utilisateurs rattachés à ce pays.
+    users: Mapped[list["User"]] = relationship("User", back_populates="country")

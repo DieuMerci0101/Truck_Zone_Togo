@@ -33,6 +33,7 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    user: dict | None = None
 
 
 class TokenRefresh(BaseModel):
@@ -85,6 +86,8 @@ class UserOut(BaseModel):
     nom_complet: str
     telephone: str
     role: str
+    photo_profil: str | None = None
+    photo_profil_version: int = 0
     is_verified: bool
     is_active: bool
     created_at: datetime

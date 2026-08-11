@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -14,12 +12,11 @@ from app.database import get_db
 from app.models.user import User
 from app.models.photo_profil import PhotoProfil
 from app.routers.auth import get_current_user
+from app.services.audit import log_action
+from app.services.storage import delete_upload, save_upload
 
 settings = get_settings()
 router = APIRouter(prefix="/api/users", tags=["Users"])
-
-UPLOAD_DIR = Path("uploads/photos")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_SIZE = 5 * 1024 * 1024  # 5 MB
@@ -31,8 +28,10 @@ def _user_dict(u: User) -> dict:
         "email": u.email,
         "nom_complet": u.nom_complet,
         "telephone": u.telephone,
+        "country_id": str(u.country_id) if u.country_id else None,
         "role": u.role.value,
         "photo_profil": u.photo_profil,
+        "photo_profil_version": u.photo_profil_version,
         "date_naissance": u.date_naissance,
         "lieu_naissance": u.lieu_naissance,
         "adresse": u.adresse,
@@ -67,28 +66,26 @@ async def upload_profile_photo(
     if len(content) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 5 Mo.")
 
-    # Désactiver l'ancienne photo active
+    # Désactiver l'ancienne photo active (le fichier reste sur disque :
+    # stockage persistant, aucune purge automatique).
     old_photos = await db.execute(
         select(PhotoProfil).where(
             PhotoProfil.user_id == current_user.id,
             PhotoProfil.is_active == True,
         )
     )
+    old_photo_url = current_user.photo_profil
     for old in old_photos.scalars().all():
         old.is_active = False
         db.add(old)
 
-    # Sauvegarder le fichier
-    filename = f"{current_user.id}_{uuid.uuid4().hex[:8]}{ext}"
-    filepath = UPLOAD_DIR / filename
-    filepath.write_bytes(content)
-
-    photo_url = f"/uploads/photos/{filename}"
+    # Sauvegarder le fichier dans le stockage persistant centralisé.
+    photo_url = save_upload(content, "photos", ext)
 
     # Créer l'enregistrement en base
     photo_record = PhotoProfil(
         user_id=current_user.id,
-        filename=filename,
+        filename=Path(photo_url).name,
         original_name=file.filename or "photo.jpg",
         file_path=photo_url,
         file_size=len(content),
@@ -98,7 +95,20 @@ async def upload_profile_photo(
     db.add(photo_record)
 
     current_user.photo_profil = photo_url
+    # Incrément de la version : déclenche le rechargement de l'image côté
+    # frontend (cache-busting `?v=<version>`).
+    current_user.photo_profil_version += 1
     db.add(current_user)
+
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="UPDATE_PROFILE_PHOTO",
+        target_type="user",
+        target_id=str(current_user.id),
+        details={"ancienne_photo": old_photo_url, "nouvelle_photo": photo_url},
+    )
+
     await db.commit()
     await db.refresh(current_user)
 
@@ -124,13 +134,21 @@ async def delete_profile_photo(
         old.is_active = False
         db.add(old)
 
-    if current_user.photo_profil and current_user.photo_profil.startswith("/uploads/"):
-        disk_path = Path(current_user.photo_profil.lstrip("/"))
-        if disk_path.exists():
-            disk_path.unlink(missing_ok=True)
+    deleted_url = current_user.photo_profil
+    delete_upload(deleted_url)
 
     current_user.photo_profil = None
     db.add(current_user)
+
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="DELETE_PROFILE_PHOTO",
+        target_type="user",
+        target_id=str(current_user.id),
+        details={"photo_supprimee": deleted_url},
+    )
+
     await db.commit()
     await db.refresh(current_user)
 
@@ -158,6 +176,16 @@ async def update_profile(
         current_user.bio = data.bio
 
     db.add(current_user)
+
+    await log_action(
+        db,
+        user_id=str(current_user.id),
+        action="UPDATE_PROFILE",
+        target_type="user",
+        target_id=str(current_user.id),
+        details=data.model_dump(exclude_unset=True),
+    )
+
     await db.commit()
     await db.refresh(current_user)
 

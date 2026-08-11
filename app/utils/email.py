@@ -249,7 +249,11 @@ def send_verification_approved_email(to_email: str, user_name: str, role: str | 
                 <p>Votre compte a été validé</p>
             </div>
             <div class="body">
-                <p class="greeting">Félicitations, votre compte Togo Truck Connect a été validé !</p>
+                <p class="greeting">Félicitations, votre compte Togo Truck Connect a été validé par l'administration !</p>
+                <p class="info">Votre compte sur Togo Truck Connect a été validé par l'administration. Vous pouvez désormais vous connecter :</p>
+                <p style="text-align:center; margin: 20px 0;">
+                    <a href="http://localhost:3000/login" style="display:inline-block; background:#E59E00; color:#fff; text-decoration:none; padding:12px 28px; border-radius:8px; font-size:14px; font-weight:600;">Se connecter</a>
+                </p>
                 <p class="info">En tant que <strong>{role_label}</strong>, vous pouvez maintenant accéder à toutes les fonctionnalités de la plateforme.</p>
                 <div class="badge">✓ Compte activé — Accès complet</div>
                 <p class="info">Que pouvez-vous faire maintenant ?</p>
@@ -258,6 +262,7 @@ def send_verification_approved_email(to_email: str, user_name: str, role: str | 
                     <li>Accéder à l'ensemble de votre tableau de bord ;</li>
                     <li>Déposer des offres, consulter les demandes et échanger avec la communauté.</li>
                 </ol>
+                <p class="info">Lien direct : <a href="http://localhost:3000/login" style="color:#b87e00;">http://localhost:3000/login</a></p>
             </div>
             <div class="footer">
                 <p>© 2026 Togo Truck Connect - Plateforme du transport routier au Togo</p>
@@ -270,7 +275,8 @@ def send_verification_approved_email(to_email: str, user_name: str, role: str | 
     plain_body = f"""
     Togo Truck Connect - Votre compte a été validé
 
-    Félicitations, votre compte Togo Truck Connect a été validé !
+    Votre compte sur Togo Truck Connect a été validé par l'administration.
+    Vous pouvez désormais vous connecter : http://localhost:3000/login
 
     En tant que {role_label}, vous pouvez maintenant accéder à toutes les fonctionnalités de la plateforme.
 

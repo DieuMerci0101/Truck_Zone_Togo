@@ -2,11 +2,13 @@
 Script idempotent de création / mise à jour du compte administrateur.
 
 Garantit qu'un compte administrateur existe avec :
-  - Email    : admin@togotruckconnect.com
-  - Mot de passe : Admin@2026
+  - Email    : admin@togotruck.com
+  - Mot de passe : AdminPassword123!
   - Rôle     : admin (rôle privilégié, comparé de façon insensible à la casse
                côté API — 'ADMIN' et 'admin' sont équivalents)
   - is_verified=True, is_active=True
+L'ancien compte admin (admin@togotruckconnect.com) est automatiquement
+désactivé / retiré du rôle admin.
 
 Usage :
     python -m app.seed_admin
@@ -25,14 +27,25 @@ from app.database import async_session, engine
 from app.models.enums import UserRole
 from app.models.user import User
 
-ADMIN_EMAIL = "admin@togotruckconnect.com"
-ADMIN_PASSWORD = "Admin@2026"
+ADMIN_EMAIL = "admin@togotruck.com"
+ADMIN_PASSWORD = "AdminPassword123!"
 ADMIN_NAME = "Admin TogoTruck"
 ADMIN_PHONE = "+22890123456"
+LEGACY_ADMIN_EMAIL = "admin@togotruckconnect.com"
 
 
 async def seed_admin():
     async with async_session() as db:
+        # Neutralise l'ancien compte admin (remplacé par le nouveau).
+        legacy_result = await db.execute(select(User).where(User.email == LEGACY_ADMIN_EMAIL))
+        legacy = legacy_result.scalar_one_or_none()
+        if legacy is not None and legacy.email != ADMIN_EMAIL:
+            legacy.is_active = False
+            legacy.is_verified = False
+            legacy.role = UserRole.chauffeur
+            await db.flush()
+            print(f"Ancien compte admin désactivé : {LEGACY_ADMIN_EMAIL}")
+
         result = await db.execute(select(User).where(User.email == ADMIN_EMAIL))
         admin = result.scalar_one_or_none()
 

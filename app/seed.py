@@ -28,13 +28,24 @@ from app.models import (
 )
 from passlib.hash import bcrypt # type: ignore
 
-ADMIN_EMAIL = "admin@togotruckconnect.com"
-ADMIN_PASSWORD = "Admin@2026"
+ADMIN_EMAIL = "admin@togotruck.com"
+ADMIN_PASSWORD = "AdminPassword123!"
+LEGACY_ADMIN_EMAIL = "admin@togotruckconnect.com"
 
 
 async def ensure_admin(db):
     """Crée le compte administrateur s'il n'existe pas (idempotent)."""
     from sqlalchemy import select
+
+    # Neutralise l'ancien compte admin (remplacé par le nouveau).
+    legacy_result = await db.execute(select(User).where(User.email == LEGACY_ADMIN_EMAIL))
+    legacy = legacy_result.scalar_one_or_none()
+    if legacy is not None and legacy.email != ADMIN_EMAIL:
+        legacy.is_active = False
+        legacy.is_verified = False
+        legacy.role = UserRole.chauffeur
+        await db.flush()
+        print(f"ℹ️  Ancien compte admin désactivé : {LEGACY_ADMIN_EMAIL}")
 
     result = await db.execute(select(User).where(User.email == ADMIN_EMAIL))
     existing = result.scalar_one_or_none()

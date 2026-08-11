@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from app.config import get_settings
 from app.database import init_db, close_db, async_session
 from fastapi.staticfiles import StaticFiles
-from app.routers import auth, chauffeurs, proprietaires, mecaniciens, conversations, incidents, admin, notifications, offres, users, countries
+from app.routers import auth, chauffeurs, proprietaires, mecaniciens, conversations, incidents, admin, notifications, offres, users, countries, documents
 from app.websocket_chat import router as ws_router
 
 logger = logging.getLogger(__name__)
@@ -26,13 +26,25 @@ async def lifespan(app: FastAPI):
         from sqlalchemy import select
         from passlib.hash import bcrypt
 
-        admin_email = "admin@togotruckconnect.com"
+        admin_email = "admin@togotruck.com"
+        admin_password = "AdminPassword123!"
+        legacy_admin_email = "admin@togotruckconnect.com"
 
         async with async_session() as db:
+            # 1) Neutralise l'ancien compte admin (remplacé par le nouveau).
+            legacy_result = await db.execute(select(User).where(User.email == legacy_admin_email))
+            legacy_user = legacy_result.scalar_one_or_none()
+            if legacy_user is not None and legacy_user.email != admin_email:
+                legacy_user.is_active = False
+                legacy_user.is_verified = False
+                legacy_user.role = UserRole.chauffeur
+                logger.info("ℹ️  Ancien compte admin désactivé : %s", legacy_admin_email)
+
+            # 2) Crée / répare le compte admin local.
             result = await db.execute(select(User).where(User.email == admin_email))
             admin_user = result.scalar_one_or_none()
             if admin_user is None:
-                password_hash = bcrypt.hash("Admin@2026")
+                password_hash = bcrypt.hash(admin_password)
                 admin_user = User(
                     id=uuid.uuid4(),
                     email=admin_email,
@@ -44,26 +56,20 @@ async def lifespan(app: FastAPI):
                     is_active=True,
                 )
                 db.add(admin_user)
-                await db.commit()
-                logger.info("✅ Compte admin par défaut créé: admin@togotruckconnect.com")
-            elif admin_user.role != UserRole.admin:
-                # Un compte avec cet email existe déjà : on s'assure qu'il a
-                # bien le rôle admin + le mot de passe par défaut (idempotent).
-                admin_user.role = UserRole.admin
-                admin_user.is_verified = True
-                admin_user.is_active = True
-                if not bcrypt.verify("Admin@2026", admin_user.password_hash):
-                    admin_user.password_hash = bcrypt.hash("Admin@2026")
-                await db.commit()
-                logger.info("✅ Compte existant corrigé en admin (rôle + mot de passe)")
+                logger.info("✅ Compte admin local créé : admin@togotruck.com")
             else:
-                # Sécurise le hash du mot de passe (récupération automatique).
-                if not bcrypt.verify("Admin@2026", admin_user.password_hash):
-                    admin_user.password_hash = bcrypt.hash("Admin@2026")
-                    await db.commit()
-                    logger.info("✅ Mot de passe admin réinitialisé: Admin@2026")
+                # Sécurise le rôle admin + le mot de passe par défaut (idempotent).
+                if admin_user.role != UserRole.admin or not bcrypt.verify(
+                    admin_password, admin_user.password_hash
+                ):
+                    admin_user.role = UserRole.admin
+                    admin_user.is_verified = True
+                    admin_user.is_active = True
+                    admin_user.password_hash = bcrypt.hash(admin_password)
+                    logger.info("✅ Compte admin réparé (rôle + mot de passe)")
                 else:
-                    logger.info("ℹ️  Compte admin déjà existant, skip création")
+                    logger.info("ℹ️  Compte admin déjà présent, skip création")
+            await db.commit()
     except Exception as e:
         logger.warning(f"⚠️  Erreur création admin (non bloquant): {e}")
 
@@ -133,12 +139,25 @@ app.include_router(notifications.router)
 app.include_router(offres.router)
 app.include_router(users.router)
 app.include_router(countries.router)
+app.include_router(documents.router)
 app.include_router(ws_router)
 
 # Crée les dossiers d'upload avant le montage statique pour éviter un crash
 # de démarrage sur Render (filesystem éphémère) et des erreurs d'écriture.
 os.makedirs("uploads", exist_ok=True)
-for _sub in ("documents", "justificatifs", "camions", "audios", "photos"):
+for _sub in (
+    "documents",
+    "justificatifs",
+    "camions",
+    "audios",
+    "photos",
+    # Stockage persistant centralisé (jamais purgé automatiquement)
+    "permanent/photos",
+    "permanent/camions",
+    "permanent/documents",
+    "permanent/justificatifs",
+    "permanent/audios",
+):
     os.makedirs(os.path.join("uploads", _sub), exist_ok=True)
 
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

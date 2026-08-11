@@ -32,9 +32,50 @@ from app.models.assistance import DemandeAssistance
 from app.models.camion import Camion
 from app.schemas.incident import IncidentOut
 from app.schemas.mecanicien import AssistanceOut, MecanicienVerificationUpdate
-from app.routers.auth import require_admin
+from app.routers.auth import require_admin, user_role
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
+
+
+# ─── Journal d'audit ────────────────────────────────
+
+@router.get("/audit")
+async def list_audit_logs(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    action: str | None = None,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Historique complet des actions critiques (REGISTER, UPDATE_PROFILE_PHOTO,
+    ADD_TRUCK, DELETE_TRUCK, UPLOAD_DOCUMENT, UPDATE_USER_STATUS, ...).
+    Réservé aux administrateurs.
+    """
+    from app.models.audit_log import AuditLog
+
+    query = select(AuditLog)
+    if action:
+        query = query.where(AuditLog.action == action)
+    query = (
+        query.order_by(AuditLog.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    logs = result.scalars().all()
+    return [
+        {
+            "id": str(l.id),
+            "user_id": str(l.user_id) if l.user_id else None,
+            "action": l.action,
+            "target_type": l.target_type,
+            "target_id": l.target_id,
+            "details": l.details,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        }
+        for l in logs
+    ]
 
 
 # ─── Statistiques du dashboard ─────────────────────
@@ -132,9 +173,13 @@ async def list_users(
 ):
     """
     Liste tous les utilisateurs avec filtres optionnels.
+    Effectue une jointure avec la table `countries` pour renvoyer, pour chaque
+    utilisateur : nom complet, email, rôle, statut, pays, indicatif et téléphone.
     Protégé : uniquement les administrateurs.
     """
-    query = select(User)
+    from sqlalchemy.orm import selectinload
+
+    query = select(User).options(selectinload(User.country))
     if role:
         query = query.where(User.role == role)
     query = query.order_by(User.created_at.desc()).offset(skip).limit(limit)
@@ -146,6 +191,9 @@ async def list_users(
             "email": u.email,
             "nom_complet": u.nom_complet,
             "telephone": u.telephone,
+            "country_id": str(u.country_id) if u.country_id else None,
+            "pays": u.country.name if u.country else None,
+            "indicatif": u.country.phone_code if u.country else None,
             "role": u.role.value if hasattr(u.role, "value") else u.role,
             "is_active": u.is_active,
             "is_verified": u.is_verified,
@@ -162,10 +210,14 @@ async def get_user(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Récupère les détails d'un utilisateur spécifique.
+    Récupère les détails d'un utilisateur spécifique (avec son pays via JOIN).
     Protégé : uniquement les administrateurs.
     """
-    result = await db.execute(select(User).where(User.id == user_id))
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(User).options(selectinload(User.country)).where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
@@ -174,6 +226,9 @@ async def get_user(
         "email": user.email,
         "nom_complet": user.nom_complet,
         "telephone": user.telephone,
+        "country_id": str(user.country_id) if user.country_id else None,
+        "pays": user.country.name if user.country else None,
+        "indicatif": user.country.phone_code if user.country else None,
         "role": user.role.value if hasattr(user.role, "value") else user.role,
         "is_active": user.is_active,
         "is_verified": user.is_verified,
@@ -202,6 +257,18 @@ async def toggle_user_status(
 
     user.is_active = not user.is_active
     await db.flush()
+
+    from app.services.audit import log_action
+
+    await log_action(
+        db,
+        user_id=str(admin.id),
+        action="UPDATE_USER_STATUS",
+        target_type="user",
+        target_id=str(user.id),
+        details={"is_active": user.is_active},
+    )
+
     return {
         "message": f"Utilisateur {'activé' if user.is_active else 'désactivé'} avec succès",
         "is_active": user.is_active,
@@ -254,6 +321,20 @@ class DocumentStatutUpdate(BaseModel):
     motif: str | None = None
 
 
+class DocumentStatusUpdate(BaseModel):
+    """Alias anglais (local/dev) : status / rejection_reason."""
+
+    status: str = Field(..., pattern=r"^(VALIDATED|REJECTED|PENDING)$")
+    rejection_reason: str | None = None
+
+
+_STATUS_MAP = {
+    "VALIDATED": "valide",
+    "REJECTED": "rejete",
+    "PENDING": "en_attente",
+}
+
+
 @router.put("/documents/{document_id}/statut")
 async def update_document_statut(
     document_id: uuid.UUID,
@@ -264,17 +345,82 @@ async def update_document_statut(
     """
     Met à jour le statut d'un document (validé, rejeté, en_attente).
     Protégé : uniquement les administrateurs.
-    Envoie une notification à l'utilisateur concerné.
-    En cas de rejet, envoie un email avec le motif et sauvegarde le commentaire.
+    """
+    return await _apply_document_status(db, document_id, body.statut, body.motif)
+
+
+@router.patch("/documents/{document_id}/status")
+async def update_document_status(
+    document_id: uuid.UUID,
+    body: DocumentStatusUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Alias anglais de /documents/{document_id}/statut.
+    Corps : { "status": "VALIDATED" } ou { "status": "REJECTED", "rejection_reason": "..." }.
+    """
+    statut = _STATUS_MAP.get(body.status)
+    if statut is None:
+        raise HTTPException(status_code=422, detail="Statut invalide")
+    return await _apply_document_status(db, document_id, statut, body.rejection_reason)
+
+
+class DocumentRejectUpdate(BaseModel):
+    """Corps pour PATCH /documents/{document_id}/reject."""
+
+    motif: str | None = None
+    rejection_reason: str | None = None
+
+
+@router.patch("/documents/{document_id}/approve")
+async def approve_document(
+    document_id: uuid.UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Valide un document et bascule automatiquement le compte en APPROVED
+    lorsque tous les documents requis sont validés.
+    Protégé : uniquement les administrateurs.
+    """
+    return await _apply_document_status(db, document_id, "valide")
+
+
+@router.patch("/documents/{document_id}/reject")
+async def reject_document(
+    document_id: uuid.UUID,
+    body: DocumentRejectUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Rejette un document (motif obligatoire via `motif` ou `rejection_reason`)
+    et bascule le compte en REJECTED. Notification + email envoyés.
+    Protégé : uniquement les administrateurs.
+    """
+    motif = (body.motif or body.rejection_reason or "").strip()
+    if not motif:
+        raise HTTPException(status_code=422, detail="Un motif de rejet est obligatoire")
+    return await _apply_document_status(db, document_id, "rejete", motif)
+
+
+async def _apply_document_status(
+    db: AsyncSession,
+    document_id: uuid.UUID,
+    statut: str,
+    motif: str | None = None,
+):
+    """
+    Applique un changement de statut sur un document et gère les effets de bord :
+    notifications, e-mails et bascule automatique du compte en APPROVED quand
+    tous les documents requis sont validés.
     """
     from app.models.document import Document
     from app.utils.notifications import notify_user
     from app.utils.email import send_document_rejection_email
     from app.utils.verification import set_verification_status, APPROVED, REJECTED, REQUIRED_DOCS_BY_ROLE
     from sqlalchemy.orm import selectinload
-
-    statut = body.statut
-    motif = body.motif
 
     result = await db.execute(
         select(Document)
@@ -306,17 +452,22 @@ async def update_document_statut(
         user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))
         user = user_result.scalar_one_or_none()
         if user:
-            role_types = REQUIRED_DOCS_BY_ROLE.get(user_role(user))
-            if role_types:
+            role_groups = REQUIRED_DOCS_BY_ROLE.get(user_role(user))
+            if role_groups:
                 docs_result = await db.execute(
-                    select(Document).where(
-                        Document.utilisateur_id == user.id,
-                        Document.type_document.in_(role_types),
+                    select(Document.type_document, Document.statut).where(
+                        Document.utilisateur_id == user.id
                     )
                 )
-                all_docs = docs_result.scalars().all()
-                validated_types = {d.type_document.value if hasattr(d.type_document, 'value') else d.type_document for d in all_docs if d.statut == "valide"}
-                if set(role_types).issubset(validated_types):
+                validated_types = {
+                    td.value if hasattr(td, "value") else td
+                    for td, st in docs_result.all()
+                    if st == "valide"
+                }
+                all_groups_valid = all(
+                    any(t in validated_types for t in group) for group in role_groups
+                )
+                if all_groups_valid:
                     set_verification_status(user, APPROVED)
             else:
                 set_verification_status(user, APPROVED)
@@ -345,6 +496,36 @@ async def update_document_statut(
 
     await db.flush()
     return {"message": f"Statut du document mis à jour : {statut}"}
+
+
+@router.get("/users/{user_id}/documents")
+async def get_user_documents(
+    user_id: uuid.UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Renvoie tous les documents téléversés par un utilisateur spécifique.
+    Protégé : uniquement les administrateurs.
+    """
+    from app.models.document import Document
+
+    result = await db.execute(
+        select(Document).where(Document.utilisateur_id == user_id).order_by(Document.created_at.desc())
+    )
+    docs = result.scalars().all()
+    return [
+        {
+            "id": str(d.id),
+            "utilisateur_id": str(d.utilisateur_id),
+            "type_document": d.type_document.value if hasattr(d.type_document, "value") else d.type_document,
+            "url": d.fichier_url,
+            "statut": d.statut,
+            "commentaire_admin": d.commentaire_admin,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
+        }
+        for d in docs
+    ]
 
 
 # ─── Vérification des mécaniciens ───────────────────
