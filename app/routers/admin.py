@@ -17,7 +17,7 @@ from app.routers.auth import require_admin, user_role
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -376,6 +376,7 @@ class DocumentRejectUpdate(BaseModel):
 @router.patch("/documents/{document_id}/approve")
 async def approve_document(
     document_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -384,13 +385,14 @@ async def approve_document(
     lorsque tous les documents requis sont validés.
     Protégé : uniquement les administrateurs.
     """
-    return await _apply_document_status(db, document_id, "valide")
+    return await _apply_document_status(db, document_id, "valide", background_tasks=background_tasks)
 
 
 @router.patch("/documents/{document_id}/reject")
 async def reject_document(
     document_id: uuid.UUID,
     body: DocumentRejectUpdate,
+    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -402,7 +404,7 @@ async def reject_document(
     motif = (body.motif or body.rejection_reason or "").strip()
     if not motif:
         raise HTTPException(status_code=422, detail="Un motif de rejet est obligatoire")
-    return await _apply_document_status(db, document_id, "rejete", motif)
+    return await _apply_document_status(db, document_id, "rejete", motif, background_tasks=background_tasks)
 
 
 async def _apply_document_status(
@@ -410,6 +412,7 @@ async def _apply_document_status(
     document_id: uuid.UUID,
     statut: str,
     motif: str | None = None,
+    background_tasks: BackgroundTasks | None = None,
 ):
     """
     Applique un changement de statut sur un document et gère les effets de bord :
@@ -418,7 +421,7 @@ async def _apply_document_status(
     """
     from app.models.document import Document
     from app.utils.notifications import notify_user
-    from app.utils.email import send_document_rejection_email
+    from app.utils.email import email_task, send_document_rejection_email
     from app.utils.verification import set_verification_status, APPROVED, REJECTED, REQUIRED_DOCS_BY_ROLE
     from sqlalchemy.orm import selectinload
 
@@ -487,14 +490,26 @@ async def _apply_document_status(
             # Synchronise le statut global du compte
             set_verification_status(user, REJECTED, motif=motif)
             doc_label = doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document
-            send_document_rejection_email(
-                to_email=user.email,
-                user_name=user.nom_complet or "",
-                document_type=doc_label,
-                motif=motif,
-            )
+            if background_tasks is not None:
+                background_tasks.add_task(
+                    email_task,
+                    send_document_rejection_email,
+                    to_email=user.email,
+                    user_name=user.nom_complet or "",
+                    document_type=doc_label,
+                    motif=motif,
+                )
+            else:
+                send_document_rejection_email(
+                    to_email=user.email,
+                    user_name=user.nom_complet or "",
+                    document_type=doc_label,
+                    motif=motif,
+                )
 
-    await db.flush()
+    # Commit explicite AVANT le retour : garantit la persistance indépendamment
+    # de l'ordre d'exécution des tâches de fond.
+    await db.commit()
     return {"message": f"Statut du document mis à jour : {statut}"}
 
 
@@ -576,6 +591,7 @@ async def list_pending_mechanics(
 async def verify_mechanic(
     mecanicien_id: uuid.UUID,
     body: MecanicienVerificationUpdate,
+    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -587,6 +603,7 @@ async def verify_mechanic(
     from sqlalchemy.orm import selectinload
     from app.utils.notifications import notify_user
     from app.utils.email import (
+        email_task,
         send_verification_rejection_email,
         send_verification_approved_email,
     )
@@ -620,7 +637,9 @@ async def verify_mechanic(
                 type_notif="document",
                 lien=lien,
             )
-            send_verification_approved_email(
+            background_tasks.add_task(
+                email_task,
+                send_verification_approved_email,
                 to_email=profil.user.email,
                 user_name=profil.user.nom_complet or "",
                 role="mecanicien",
@@ -637,14 +656,18 @@ async def verify_mechanic(
                 type_notif="document",
                 lien=lien,
             )
-            send_verification_rejection_email(
+            background_tasks.add_task(
+                email_task,
+                send_verification_rejection_email,
                 to_email=profil.user.email,
                 user_name=profil.user.nom_complet or "",
                 motif=motif,
                 role="mecanicien",
             )
 
-    await db.flush()
+    # Commit explicite AVANT le retour : garantit la persistance indépendamment
+    # de l'ordre d'exécution des tâches de fond.
+    await db.commit()
     return {
         "message": f"Vérification du mécanicien : {body.statut}",
         "verification_status": profil.verification_status,
@@ -775,6 +798,7 @@ async def list_verifications(
 async def decide_verification(
     user_id: uuid.UUID,
     body: VerificationDecision,
+    background_tasks: BackgroundTasks,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -786,6 +810,7 @@ async def decide_verification(
     """
     from app.utils.notifications import notify_user
     from app.utils.email import (
+        email_task,
         send_verification_rejection_email,
         send_verification_approved_email,
     )
@@ -834,7 +859,9 @@ async def decide_verification(
             type_notif="document",
             lien=f"/dashboard/{role}",
         )
-        send_verification_approved_email(
+        background_tasks.add_task(
+            email_task,
+            send_verification_approved_email,
             to_email=user.email,
             user_name=user.nom_complet or "",
             role=role,
@@ -867,7 +894,9 @@ async def decide_verification(
             type_notif="document",
             lien=f"/dashboard/{role}",
         )
-        send_verification_rejection_email(
+        background_tasks.add_task(
+            email_task,
+            send_verification_rejection_email,
             to_email=user.email,
             user_name=user.nom_complet or "",
             motif=motif,
@@ -875,7 +904,9 @@ async def decide_verification(
         )
         message = f"Compte de {user.nom_complet} rejeté"
 
-    await db.flush()
+    # Commit explicite AVANT le retour : garantit la persistance indépendamment
+    # de l'ordre d'exécution des tâches de fond.
+    await db.commit()
     return {
         "message": message,
         "verification_status": user.verification_status,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.hash import bcrypt
@@ -15,7 +15,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.models.otp import OTPReset
-from app.utils.email import send_otp_email
+from app.utils.email import email_task, send_otp_email
 from app.utils.verification import PENDING_UPLOAD
 
 settings = get_settings()
@@ -501,7 +501,11 @@ async def change_password(
 
 
 @router.post("/forgot-password")
-async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_db)):
+async def forgot_password(
+    data: ForgotPassword,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
 
@@ -526,12 +530,13 @@ async def forgot_password(data: ForgotPassword, db: AsyncSession = Depends(get_d
         attempts=0,
     )
     db.add(otp)
-    await db.flush()
 
-    # Envoyer l'email avec le code OTP via SMTP
-    email_sent = send_otp_email(user.email, otp_code, user.nom_complet)
-    if not email_sent:
-        raise HTTPException(status_code=500, detail="Échec de l'envoi de l'e-mail")
+    # Persister l'OTP AVANT l'envoi : l'email part en arrière-plan (thread
+    # dédié) et son échec ne doit ni perdre le code, ni faire échouer la
+    # requête (fini le 500 si SMTP indisponible).
+    await db.commit()
+
+    background_tasks.add_task(email_task, send_otp_email, user.email, otp_code, user.nom_complet)
 
     return {"message": f"Un code OTP a été envoyé à {data.email}"}
 
@@ -638,9 +643,17 @@ async def refresh_token(data: TokenRefresh, db: AsyncSession = Depends(get_db)):
             "telephone": user.telephone,
             "country_id": str(user.country_id) if user.country_id else None,
             "role": role,
+            "photo_profil": user.photo_profil,
+            "photo_profil_version": user.photo_profil_version,
+            "date_naissance": user.date_naissance,
+            "lieu_naissance": user.lieu_naissance,
+            "adresse": user.adresse,
+            "bio": user.bio,
             "is_verified": user.is_verified,
             "is_active": user.is_active,
             "verification_status": user.verification_status,
+            "verification_reject_motif": user.verification_reject_motif,
+            "created_at": str(user.created_at),
         },
     )
 

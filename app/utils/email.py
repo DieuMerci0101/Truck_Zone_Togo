@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import smtplib
 import traceback
@@ -33,6 +34,22 @@ def _smtp_is_configured(settings) -> bool:
         and settings.smtp_user
         and settings.smtp_password
     )
+
+
+async def email_task(func, *args, **kwargs) -> None:
+    """
+    Exécute un envoi SMTP bloquant dans un thread dédié (`asyncio.to_thread`),
+    hors de l'event loop : un SMTP lent ou indisponible ne bloque plus la
+    requête FastAPI. Journalise les erreurs sans jamais lever d'exception :
+    l'échec d'un email ne doit pas faire échouer l'action métier (approbation,
+    rejet, réinitialisation...).
+    """
+    try:
+        ok = await asyncio.to_thread(func, *args, **kwargs)
+        if not ok:
+            logger.error("[EMAIL] L'envoi en arrière-plan a échoué (voir logs SMTP ci-dessus).")
+    except Exception:
+        logger.error("[EMAIL] Erreur inattendue lors de l'envoi en arrière-plan.", exc_info=True)
 
 
 def _send_email(to_email: str, subject: str, html_body: str, plain_body: str | None = None) -> bool:
