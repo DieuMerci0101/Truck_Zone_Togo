@@ -64,6 +64,39 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token invalide ou expiré")
 
 
+async def resolve_country(db: AsyncSession, country_id: str):
+    """
+    Résout un pays de la table `countries` à partir d'une valeur souple :
+      - UUID PostgreSQL du pays (forme canonique du frontend) ;
+      - code ISO 3166-1 alpha-2 (ex: "TG", "FR") ;
+      - code ISO préfixé par la liste de secours frontend (ex: "fb-TG").
+
+    Retourne l'entité Country ou None si aucun pays actif ne correspond.
+    """
+    from app.models.country import Country
+
+    value = (country_id or "").strip()
+    if not value:
+        return None
+    if value.lower().startswith("fb-"):
+        value = value[3:]
+
+    try:
+        uid = uuid.UUID(value)
+    except (ValueError, AttributeError):
+        uid = None
+
+    if uid is not None:
+        stmt = select(Country).where(
+            Country.is_active.is_(True), Country.id == uid
+        )
+    else:
+        stmt = select(Country).where(
+            Country.is_active.is_(True), Country.code == value.upper()
+        )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
@@ -146,7 +179,11 @@ class UserRegister(BaseModel):
     confirm_password: str
     # Pays sélectionné dans le formulaire (table `countries`) + numéro national.
     # Le numéro complet (E.164) est reconstitué côté serveur avec l'indicatif.
-    country_id: uuid.UUID = Field(...)
+    # Accepte l'UUID PostgreSQL du pays OU son code ISO 3166-1 alpha-2
+    # ("TG", "FR", ...). La forme code ISO est tolérée (y compris le préfixe
+    # factice "fb-" de la liste de secours frontend) afin que l'inscription ne
+    # casse jamais en cas de cold start de l'API. Résolution côté serveur.
+    country_id: str = Field(...)
     phone_number: str = Field(..., min_length=3, max_length=15)
     # Rétrocompatibilité : ancien champ "telephone" (E.164 complet) si fourni.
     telephone: str | None = Field(
@@ -236,16 +273,10 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     if data.role == "admin":
         raise HTTPException(status_code=403, detail="Accès refusé")
 
-    from app.models.country import Country
     from app.utils.phone import build_e164, is_valid_national_number
 
-    # 1) Le pays sélectionné doit exister et être actif.
-    country_result = await db.execute(
-        select(Country).where(
-            Country.id == data.country_id, Country.is_active.is_(True)
-        )
-    )
-    country = country_result.scalar_one_or_none()
+    # 1) Le pays sélectionné doit exister et être actif (UUID ou code ISO).
+    country = await resolve_country(db, data.country_id)
     if not country:
         raise HTTPException(
             status_code=400,
