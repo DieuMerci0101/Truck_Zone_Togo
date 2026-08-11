@@ -6,7 +6,33 @@ from email.mime.text import MIMEText
 
 from app.config import get_settings
 
+# Garantit que les logs d'envoi d'email sont visibles dans les logs Render
+# (no-op si uvicorn a déjà configuré le root logger).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _resolve_from(settings) -> str:
+    """Expéditeur réel de l'email : EMAIL_FROM explicite, sinon le compte SMTP
+    authentifié (MAIL_USERNAME / SMTP_USER) — recommandé avec Gmail."""
+    if settings.email_from and settings.email_from.strip():
+        return settings.email_from.strip()
+    if settings.smtp_user and settings.smtp_user.strip():
+        return settings.smtp_user.strip()
+    return "TogoTruckConnect <noreply@togotruckconnect.com>"
+
+
+def _smtp_is_configured(settings) -> bool:
+    return bool(
+        settings.smtp_host
+        and settings.smtp_port
+        and settings.smtp_user
+        and settings.smtp_password
+    )
 
 
 def _send_email(to_email: str, subject: str, html_body: str, plain_body: str | None = None) -> bool:
@@ -15,28 +41,46 @@ def _send_email(to_email: str, subject: str, html_body: str, plain_body: str | N
     Retourne True en cas de succès, False sinon. Log détaillé en cas d'erreur.
     """
     settings = get_settings()
+    from_addr = _resolve_from(settings)
+
+    if not _smtp_is_configured(settings):
+        logger.error(
+            "[EMAIL] SMTP non configuré — impossible d'envoyer « %s » à %s. "
+            "Définir SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD "
+            "(ou MAIL_*) dans les variables d'environnement.",
+            subject,
+            to_email,
+        )
+        return False
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = settings.email_from
+    msg["From"] = from_addr
     msg["To"] = to_email
 
     msg.attach(MIMEText(plain_body or html_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
+        logger.info(
+            "[EMAIL] Envoi de « %s » à %s via %s:%s",
+            subject,
+            to_email,
+            settings.smtp_host,
+            settings.smtp_port,
+        )
         if settings.smtp_port == 465:
             with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=15) as server:
                 server.ehlo()
                 server.login(settings.smtp_user, settings.smtp_password)
-                server.sendmail(settings.email_from, to_email, msg.as_string())
+                server.sendmail(from_addr, to_email, msg.as_string())
         else:
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
                 server.ehlo()
                 server.starttls()
                 server.ehlo()
                 server.login(settings.smtp_user, settings.smtp_password)
-                server.sendmail(settings.email_from, to_email, msg.as_string())
+                server.sendmail(from_addr, to_email, msg.as_string())
         logger.info("[EMAIL] Envoyé « %s » à %s", subject, to_email)
         return True
     except Exception as exc:
@@ -57,9 +101,16 @@ def send_otp_email(to_email: str, otp_code: str, user_name: str = "") -> bool:
     """
     settings = get_settings()
 
-    if not settings.smtp_user or not settings.smtp_password:
-        logger.warning("[EMAIL] SMTP non configuré. Code OTP pour %s : %s", to_email, otp_code)
-        return True
+    if not _smtp_is_configured(settings):
+        logger.error(
+            "[EMAIL] SMTP non configuré — pas de code OTP envoyé à %s. "
+            "Définir SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD.",
+            to_email,
+        )
+        return False
+
+    # URL publique du frontend (env `FRONTEND_URL`, défaut = production Vercel).
+    verify_url = f"{settings.frontend_url.rstrip('/')}/verify-otp"
 
     subject = "Togo Truck Connect - Code de réinitialisation"
 
@@ -79,6 +130,7 @@ def send_otp_email(to_email: str, otp_code: str, user_name: str = "") -> bool:
             .otp-box {{ background: #f0f7ff; border: 2px dashed #3b82f6; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0; }}
             .otp-code {{ font-size: 32px; font-weight: bold; color: #1d4ed8; letter-spacing: 8px; }}
             .otp-label {{ font-size: 12px; color: #6b7280; margin-top: 8px; }}
+            .btn {{ display:inline-block; background:#E59E00; color:#fff; text-decoration:none; padding:12px 28px; border-radius:8px; font-size:14px; font-weight:600; }}
             .info {{ font-size: 13px; color: #6b7280; line-height: 1.6; }}
             .footer {{ background: #f9fafb; padding: 20px; text-align: center; border-top: 1px solid #e5e7eb; }}
             .footer p {{ font-size: 11px; color: #9ca3af; margin: 0; }}
@@ -97,6 +149,10 @@ def send_otp_email(to_email: str, otp_code: str, user_name: str = "") -> bool:
                     <div class="otp-code">{otp_code}</div>
                     <div class="otp-label">Ce code expire dans 10 minutes</div>
                 </div>
+                <p style="text-align:center; margin: 24px 0;">
+                    <a href="{verify_url}" class="btn">Saisir mon code</a>
+                </p>
+                <p class="info">Lien direct : <a href="{verify_url}" style="color:#b87e00;">{verify_url}</a></p>
                 <p class="info">Si vous n'avez pas demandé cette réinitialisation, ignorez simplement cet email.</p>
             </div>
             <div class="footer">
@@ -115,6 +171,8 @@ def send_otp_email(to_email: str, otp_code: str, user_name: str = "") -> bool:
     Votre code de réinitialisation est : {otp_code}
 
     Ce code expire dans 10 minutes.
+
+    Saisissez ce code sur la page : {verify_url}
 
     Si vous n'avez pas demandé cette réinitialisation, ignorez cet email.
     """

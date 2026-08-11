@@ -73,7 +73,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("smtp_password", "SMTP_PASSWORD", "SMTP_PASS", "MAIL_PASSWORD", "MAIL_PASS"),
     )
     email_from: str = Field(
-        default="TogoTruckConnect <noreply@togotruckconnect.com>",
+        # Si vide, l'email est envoyé depuis `smtp_user` (MAIL_USERNAME / SMTP_USER).
+        # Avec Gmail, utiliser l'adresse du compte authentifié améliore la
+        # délivrabilité (SPF/DKIM alignés) — éviter les domaines tiers.
+        default="",
         validation_alias=AliasChoices("email_from", "EMAIL_FROM", "MAIL_FROM", "MAIL_DEFAULT_SENDER"),
     )
 
