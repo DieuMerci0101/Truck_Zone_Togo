@@ -152,6 +152,8 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
+      - key: BREVO_API_KEY
+        sync: false
       - key: MINIO_ENDPOINT
         sync: false
       - key: MINIO_ACCESS_KEY
@@ -252,18 +254,43 @@ Toutes les variables ci-dessous doivent etre configurees dans Render
 > sortant depuis les IP des datacenters (Render) : la connexion vers
 > `smtp.gmail.com:587` est silencieusement droppee → `[Errno 101] Network is
 > unreachable` / `TimeoutError: timed out`, alors que tout marche en local.
-> **Solution fiable : un relais SMTP transactionnel comme Brevo** (gratuit,
-> 300 emails/jour), qui accepte les IP de serveurs.
 
-#### Configuration Brevo (recommandee)
+> **IMPORTANT (Render) :** depuis le **26/09/2025**, Render **bloque le trafic
+> SMTP sortant (ports 25, 465, 587)** sur les **web services GRATUITS** (toutes
+> regions). Resultat : `TimeoutError: timed out` meme avec un relais Brevo
+> correct. **Deux solutions :**
+> 1. **API HTTP Brevo (RECOMMANDEE, gratuite)** — le port 443 n'est jamais
+>    bloque. Il suffit de definir `BREVO_API_KEY` (le backend bascule alors sur
+>    l'API au lieu du SMTP).
+> 2. Passer le Web Service Render en **instance payante** (debloque le SMTP
+>    sortant 465/587).
 
-1. Cree un compte sur https://www.brevo.com (gratuit).
-2. **Settings > SMTP & API** : genere une **clé SMTP** (commence par `xsmtpsib-`).
+#### Configuration Brevo — MODE API (a utiliser sur Render)
+
+1. Cree un compte sur https://www.brevo.com (gratuit, 300 emails/jour).
+2. **Settings > SMTP & API > API Keys** : genere une **clé API** (commence par
+   `xkeysib-`). ⚠️ Ce n'est PAS la clé SMTP (`xsmtpsib-...`) : il en existe
+   deux types distincts dans Brevo.
+3. **Settings > Senders & IPs** : **verifie** l'adresse d'envoi utilisee dans
+   `EMAIL_FROM` (ex. `patgodson01@gmail.com`), sinon Brevo refuse l'envoi.
+4. Sur Render, definis cette variable :
+
+| Variable | Valeur | Description |
+|----------|--------|-------------|
+| `BREVO_API_KEY` | `xkeysib-...` | Clé API Brevo (Settings > SMTP & API > API Keys) |
+| `EMAIL_FROM` | `TogoTruckConnect <patgodson01@gmail.com>` | Expediteur, adresse **verifiee** dans Brevo |
+
+> Le SMTP (`MAIL_*` / `SMTP_*`) devient alors **optionnel** : le backend
+> prefere l'API des que `BREVO_API_KEY` est defini.
+
+#### Configuration Brevo — MODE SMTP (dev local ou instance payante)
+
+1. **Settings > SMTP & API** : genere une **clé SMTP** (commence par `xsmtpsib-`).
    - Le champ **« SMTP Login »** affiche (format `xxxx@smtp-brevo.com`) =
      `MAIL_USERNAME` — ce n'est PAS ton email de compte Brevo.
-3. **Settings > Senders & IPs** : **verifie** l'adresse d'envoi utilisee dans
+2. **Settings > Senders & IPs** : **verifie** l'adresse d'envoi utilisee dans
    `MAIL_FROM` (ex. `patgodson01@gmail.com`), sinon Brevo refuse l'envoi.
-4. Sur Render, definis ces variables :
+3. Sur Render, definis ces variables :
 
 | Variable | Valeur | Description |
 |----------|--------|-------------|
@@ -292,25 +319,33 @@ Toutes les variables ci-dessous doivent etre configurees dans Render
 > dans `backend/app/utils/email.py` (`_smtp_connect`). Mais si le blocage vient
 > de Google (IP cloud), seul un relais type Brevo regle le probleme.
 
-#### Diagnostic SMTP en production
+#### Diagnostic d'envoi en production
 
 Si un envoi echoue, le backend repond **HTTP 500 avec le motif exact**
-(connexion, TLS, authentification `535`, rejet serveur...). Pour tester
-directement depuis Render :
+(connexion, TLS, authentification `535`, rejet serveur, cle API invalide...).
+Pour tester directement depuis Render :
 
 ```bash
 # Remplacez <TOKEN_ADMIN> par un JWT d'administrateur.
 curl -X POST https://truck-zone-togo.onrender.com/api/admin/test-email \
   -H "Authorization: Bearer <TOKEN_ADMIN>" \
   -H "Content-Type: application/json"
-# Réponse si échec :
-# { "configured": true, "smtp_host": "...", ..., "ok": false, "error": "SMTPAuthenticationError: (535, b'5.7.8 Authentication failed...')" }
+# Réponse si succès (mode API) :
+# { "configured": true, "mode": "brevo_api", ..., "ok": true, "message": "Email de test envoyé..." }
+# Réponse si échec (mode SMTP bloqué par Render gratuit) :
+# { "configured": true, "mode": "smtp", ..., "ok": false, "error": "TimeoutError: timed out" }
+#   → passez en MODE API (BREVO_API_KEY) ou upgradez l'instance Render.
 ```
 
-> **`535 Authentication failed` (Brevo)** : le `MAIL_USERNAME` doit etre le
+> **`535 Authentication failed` (Brevo SMTP)** : le `MAIL_USERNAME` doit etre le
 > **« SMTP Login »** (`xxx@smtp-brevo.com`) et non le nom de domaine du serveur
 > ni ton email de compte. Le `MAIL_PASSWORD` doit etre la **clé SMTP**
 > (`xsmtpsib-...`), pas un mot de passe Brevo.
+>
+> **`401` / `400` (Brevo API)** : la clé `BREVO_API_KEY` doit commencer par
+> `xkeysib-` (clé API, PAS la clé SMTP `xsmtpsib-`). Le `400` peut aussi
+> signifier que l'adresse de `EMAIL_FROM` n'est pas verifiee dans
+> **Settings > Senders & IPs**.
 >
 > **`554` / rejet** (Brevo) : l'adresse d'envoi (`MAIL_FROM`) n'est pas
 > verifiee dans **Settings > Senders & IPs**.
@@ -1094,11 +1129,13 @@ Cochez chaque element avant de considerer le deploiement comme termine :
 - [ ] `JWT_ALGORITHM` = `HS256`
 - [ ] `ACCESS_TOKEN_EXPIRE_MINUTES` = `30`
 - [ ] `REFRESH_TOKEN_EXPIRE_DAYS` = `7`
+- [ ] `BREVO_API_KEY` = cle API Brevo (`xkeysib-...`) — **OBLIGATOIRE sur Render gratuit** (SMTP sortant bloque) ; les variables SMTP ci-dessous deviennent optionnelles
 - [ ] `SMTP_HOST` / `MAIL_SERVER` = `smtp-relay.brevo.com`
 - [ ] `SMTP_PORT` / `MAIL_PORT` = `587`
 - [ ] `SMTP_USER` / `MAIL_USERNAME` = le « SMTP Login » Brevo (`xxx@smtp-brevo.com`)
 - [ ] `SMTP_PASSWORD` / `MAIL_PASSWORD` = la cle SMTP Brevo (`xsmtpsib-...`)
 - [ ] `SMTP_FROM` / `MAIL_FROM` = adresse d'envoi **verifiee** dans Brevo (Senders & IPs)
+- [ ] Test final : `POST /api/admin/test-email` renvoie `"ok": true, "mode": "brevo_api"`
 - [ ] `MINIO_ENDPOINT` est configure
 - [ ] `MINIO_ACCESS_KEY` est configure
 - [ ] `MINIO_SECRET_KEY` est configure

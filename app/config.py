@@ -83,6 +83,14 @@ class Settings(BaseSettings):
         default="patgodson01@gmail.com",
         validation_alias=AliasChoices("email_from", "EMAIL_FROM", "MAIL_FROM", "SMTP_FROM", "MAIL_DEFAULT_SENDER"),
     )
+    # Clé API Brevo (https://app.brevo.com/settings/keys/api) — SI définie, les
+    # emails sont envoyés via l'API HTTP Brevo (port 443, non bloqué) au lieu du
+    # SMTP. OBLIGATOIRE sur Render gratuit : Render bloque le SMTP sortant
+    # (ports 25/465/587) depuis le 26/09/2025.
+    brevo_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("brevo_api_key", "BREVO_API_KEY"),
+    )
 
     # ==========================
     # MinIO

@@ -1,11 +1,14 @@
 import asyncio
 import logging
+import re
 import smtplib
 import socket
 import ssl
 import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+import httpx
 
 from app.config import get_settings
 
@@ -35,6 +38,81 @@ def _resolve_from(settings) -> str:
     return "TogoTruckConnect <noreply@togotruckconnect.com>"
 
 
+def _split_from(from_addr: str) -> tuple[str | None, str]:
+    """Découpe « Nom <email@domaine> » en (nom, email). L'API Brevo attend un
+    objet sender séparé (name + email), contrairement au SMTP."""
+    m = re.match(r"^\s*(?:(.*?)\s*<([^>]+)>|([^<@\s]+@[^>\s]+))\s*$", from_addr)
+    if m:
+        if m.group(1) and m.group(2):
+            return (m.group(1).strip() or None, m.group(2).strip())
+        return (None, m.group(3).strip())
+    return (None, from_addr.strip())
+
+
+def _send_via_brevo_api(
+    settings,
+    to_email: str,
+    subject: str,
+    html_body: str,
+    plain_body: str | None = None,
+) -> bool:
+    """
+    Envoi via l'API HTTP Brevo (POST https://api.brevo.com/v3/smtp/email).
+    Port 443 (HTTPS) : PAS bloqué par Render, contrairement aux ports SMTP
+    25/465/587 sur les services gratuits (depuis le 26/09/2025).
+    """
+    name, from_email = _split_from(_resolve_from(settings))
+    sender = {"email": from_email}
+    if name:
+        sender["name"] = name
+
+    payload = {
+        "sender": sender,
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "htmlContent": html_body,
+        "textContent": plain_body or html_body,
+    }
+    headers = {
+        "accept": "application/json",
+        "api-key": settings.brevo_api_key,
+        "content-type": "application/json",
+    }
+
+    logger.info("[EMAIL] Envoi via API Brevo de « %s » à %s", subject, to_email)
+    try:
+        resp = httpx.post(
+            "https://api.brevo.com/v3/smtp/email",
+            json=payload,
+            headers=headers,
+            timeout=15,
+        )
+    except Exception as exc:
+        logger.error(
+            "[EMAIL] Échec réseau API Brevo « %s » à %s : %s\n%s",
+            subject,
+            to_email,
+            exc,
+            traceback.format_exc(),
+        )
+        raise EmailSendError(f"{type(exc).__name__}: {exc}") from exc
+
+    if resp.status_code >= 400:
+        logger.error(
+            "[EMAIL] API Brevo refusée « %s » à %s : HTTP %s %s",
+            subject,
+            to_email,
+            resp.status_code,
+            resp.text[:300],
+        )
+        raise EmailSendError(
+            f"Brevo API HTTP {resp.status_code}: {resp.text[:200]}"
+        )
+
+    logger.info("[EMAIL] Envoyé via API Brevo « %s » à %s", subject, to_email)
+    return True
+
+
 def _smtp_is_configured(settings) -> bool:
     return bool(
         settings.smtp_host
@@ -42,6 +120,12 @@ def _smtp_is_configured(settings) -> bool:
         and settings.smtp_user
         and settings.smtp_password
     )
+
+
+def _mail_is_configured(settings) -> bool:
+    """Un canal d'envoi est-il disponible ? API Brevo (recommandé sur Render)
+    OU SMTP. Les deux débloquent l'envoi réel."""
+    return bool(settings.brevo_api_key) or _smtp_is_configured(settings)
 
 
 def _smtp_connect(host: str, port: int, *, ssl_mode: bool = False) -> smtplib.SMTP:
@@ -117,17 +201,25 @@ async def send_email_in_thread(func, *args, **kwargs) -> bool:
 
 def _send_email(to_email: str, subject: str, html_body: str, plain_body: str | None = None) -> bool:
     """
-    Envoie un email via SMTP (STARTTLS port 587/25, ou SSL port 465).
+    Envoie un email.
+    Si BREVO_API_KEY est défini → API HTTP Brevo (port 443, PAS bloqué par
+    Render gratuit, contrairement au SMTP 25/465/587 depuis le 26/09/2025).
+    Sinon → SMTP (STARTTLS port 587/25, ou SSL port 465).
     Retourne True en cas de succès, False sinon. Log détaillé en cas d'erreur.
     """
     settings = get_settings()
     from_addr = _resolve_from(settings)
 
+    if settings.brevo_api_key:
+        logger.info("[EMAIL] BREVO_API_KEY détecté — envoi via API HTTP Brevo.")
+        _send_via_brevo_api(settings, to_email, subject, html_body, plain_body)
+        return True
+
     if not _smtp_is_configured(settings):
         logger.error(
             "[EMAIL] SMTP non configuré — impossible d'envoyer « %s » à %s. "
-            "Définir SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD "
-            "(ou MAIL_*) dans les variables d'environnement.",
+            "Définir BREVO_API_KEY, ou SMTP_HOST / SMTP_PORT / SMTP_USER / "
+            "SMTP_PASSWORD (ou MAIL_*) dans les variables d'environnement.",
             subject,
             to_email,
         )
@@ -192,10 +284,11 @@ def send_otp_email(to_email: str, otp_code: str, user_name: str = "") -> bool:
     """
     settings = get_settings()
 
-    if not _smtp_is_configured(settings):
+    if not _mail_is_configured(settings):
         logger.error(
-            "[EMAIL] SMTP non configuré — pas de code OTP envoyé à %s. "
-            "Définir SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD.",
+            "[EMAIL] Aucun canal configuré — pas de code OTP envoyé à %s. "
+            "Définir BREVO_API_KEY (recommandé) ou SMTP_HOST / SMTP_PORT / "
+            "SMTP_USER / SMTP_PASSWORD.",
             to_email,
         )
         return False
@@ -278,8 +371,8 @@ def send_document_rejection_email(to_email: str, user_name: str, document_type: 
     """
     settings = get_settings()
 
-    if not settings.smtp_user or not settings.smtp_password:
-        logger.warning("[EMAIL] SMTP non configuré. Pas d'email de rejet de document pour %s", to_email)
+    if not _mail_is_configured(settings):
+        logger.warning("[EMAIL] Aucun canal configuré. Pas d'email de rejet de document pour %s", to_email)
         return False
 
     subject = "Togo Truck Connect - Motif de rejet de votre document"
@@ -364,8 +457,8 @@ def send_verification_approved_email(to_email: str, user_name: str, role: str | 
     """
     settings = get_settings()
 
-    if not settings.smtp_user or not settings.smtp_password:
-        logger.warning("[EMAIL] SMTP non configuré. Pas d'email d'activation pour %s", to_email)
+    if not _mail_is_configured(settings):
+        logger.warning("[EMAIL] Aucun canal configuré. Pas d'email d'activation pour %s", to_email)
         return False
     subject = "Togo Truck Connect - Votre compte a été validé"
     # URL publique du frontend (env `FRONTEND_URL`, défaut = production Vercel).
@@ -445,8 +538,8 @@ def send_verification_rejection_email(to_email: str, user_name: str, motif: str,
     """
     settings = get_settings()
 
-    if not settings.smtp_user or not settings.smtp_password:
-        logger.warning("[EMAIL] SMTP non configuré. Pas d'email de rejet de dossier pour %s", to_email)
+    if not _mail_is_configured(settings):
+        logger.warning("[EMAIL] Aucun canal configuré. Pas d'email de rejet de dossier pour %s", to_email)
         return False
 
     subject = "Togo Truck Connect - Motif de rejet de votre dossier de vérification"
@@ -527,8 +620,8 @@ def send_welcome_email(to_email: str, user_name: str) -> bool:
     """
     settings = get_settings()
 
-    if not settings.smtp_user or not settings.smtp_password:
-        logger.warning("[EMAIL] SMTP non configuré. Pas d'email de bienvenue pour %s", to_email)
+    if not _mail_is_configured(settings):
+        logger.warning("[EMAIL] Aucun canal configuré. Pas d'email de bienvenue pour %s", to_email)
         return False
 
     subject = "Bienvenue sur Togo Truck Connect !"

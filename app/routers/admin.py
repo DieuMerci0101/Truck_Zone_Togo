@@ -51,22 +51,24 @@ async def _send_admin_email(fn, *, to_email: str, log_label: str, **kwargs) -> b
     try:
         sent = await send_email_in_thread(fn, to_email=to_email, **kwargs)
     except EmailSendError as exc:
-        logger.error("[ADMIN] %s vers %s : échec SMTP — %s", log_label, to_email, exc)
+        logger.error("[ADMIN] %s vers %s : échec d'envoi — %s", log_label, to_email, exc)
         raise HTTPException(
             status_code=500,
             detail=(
                 f"Échec de l'envoi de l'e-mail ({log_label}) : {exc}. "
-                "Vérifiez MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD "
-                "(mot de passe d'application Gmail à 16 caractères) et MAIL_FROM."
+                "Vérifiez BREVO_API_KEY (recommandé), ou MAIL_SERVER, MAIL_PORT, "
+                "MAIL_USERNAME, MAIL_PASSWORD (mot de passe d'application Gmail à "
+                "16 caractères) et MAIL_FROM."
             ),
         ) from exc
     if not sent:
-        logger.error("[ADMIN] %s vers %s : SMTP non configuré.", log_label, to_email)
+        logger.error("[ADMIN] %s vers %s : envoi non configuré.", log_label, to_email)
         raise HTTPException(
             status_code=500,
             detail=(
-                "SMTP non configuré : définissez MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, "
-                "MAIL_PASSWORD et MAIL_FROM sur le serveur."
+                "Envoi d'e-mail non configuré : définissez BREVO_API_KEY, ou "
+                "MAIL_SERVER, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD et MAIL_FROM "
+                "sur le serveur."
             ),
         )
     return sent
@@ -960,6 +962,7 @@ async def list_all_incidents(
 
 class EmailTestResult(BaseModel):
     configured: bool
+    mode: str
     smtp_host: str
     smtp_port: int
     smtp_user: str
@@ -975,9 +978,9 @@ async def test_smtp_config(
     admin: User = Depends(require_admin),
 ):
     """
-    Diagnostic SMTP de production : tente un envoi réel via le serveur SMTP
-    configuré et renvoie l'erreur EXACTE (authentification Gmail refusée,
-    TLS, DNS, port bloqué...) en cas d'échec. Réservé aux administrateurs.
+    Diagnostic d'envoi de production : tente un envoi réel via le canal
+    configuré — API HTTP Brevo si BREVO_API_KEY est défini, sinon SMTP — et
+    renvoie l'erreur EXACTE en cas d'échec. Réservé aux administrateurs.
 
     Utilisation : POST /api/admin/test-email  (optionnel : ?to_email=adresse)
     """
@@ -992,8 +995,10 @@ async def test_smtp_config(
 
     settings = get_settings()
     recipient = to_email or (settings.smtp_user or admin.email)
+    mode = "brevo_api" if settings.brevo_api_key else "smtp"
     base = {
-        "configured": _smtp_is_configured(settings),
+        "configured": bool(settings.brevo_api_key) or _smtp_is_configured(settings),
+        "mode": mode,
         "smtp_host": settings.smtp_host,
         "smtp_port": settings.smtp_port,
         "smtp_user": settings.smtp_user,
@@ -1003,18 +1008,19 @@ async def test_smtp_config(
         return EmailTestResult(
             **base,
             ok=False,
-            message="SMTP non configuré",
+            message="Envoi non configuré",
             error=(
-                "Variables manquantes : MAIL_SERVER/SMTP_HOST, MAIL_PORT/SMTP_PORT, "
+                "Définir BREVO_API_KEY (recommandé sur Render), ou les variables "
+                "SMTP : MAIL_SERVER/SMTP_HOST, MAIL_PORT/SMTP_PORT, "
                 "MAIL_USERNAME/SMTP_USER et MAIL_PASSWORD/SMTP_PASSWORD."
             ),
         )
     try:
         await send_email_in_thread(send_welcome_email, recipient, "Test SMTP")
     except EmailSendError as exc:
-        logger.error("[ADMIN] Test SMTP échoué : %s", exc)
+        logger.error("[ADMIN] Test d'envoi échoué (%s) : %s", mode, exc)
         return EmailTestResult(
-            **base, ok=False, message="Échec SMTP", error=str(exc)
+            **base, ok=False, message="Échec de l'envoi", error=str(exc)
         )
     return EmailTestResult(
         **base,
