@@ -133,7 +133,7 @@ services:
       - key: CORS_ORIGINS
         sync: false
       - key: SMTP_HOST
-        sync: false
+        value: "smtp-relay.brevo.com"
       - key: SMTP_PORT
         value: "587"
       - key: SMTP_USER
@@ -141,6 +141,16 @@ services:
       - key: SMTP_PASSWORD
         sync: false
       - key: SMTP_FROM
+        sync: false
+      - key: MAIL_SERVER
+        sync: false
+      - key: MAIL_PORT
+        sync: false
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      - key: MAIL_FROM
         sync: false
       - key: MINIO_ENDPOINT
         sync: false
@@ -238,33 +248,49 @@ Toutes les variables ci-dessous doivent etre configurees dans Render
 
 ### 2.3 Email (SMTP)
 
+> **POURQUOI PAS GMAIL EN PROD ?** Google bloque en grande partie le SMTP
+> sortant depuis les IP des datacenters (Render) : la connexion vers
+> `smtp.gmail.com:587` est silencieusement droppee → `[Errno 101] Network is
+> unreachable` / `TimeoutError: timed out`, alors que tout marche en local.
+> **Solution fiable : un relais SMTP transactionnel comme Brevo** (gratuit,
+> 300 emails/jour), qui accepte les IP de serveurs.
+
+#### Configuration Brevo (recommandee)
+
+1. Cree un compte sur https://www.brevo.com (gratuit).
+2. **Settings > SMTP & API** : genere une **clé SMTP** (commence par `xsmtpsib-`).
+   - Le champ **« SMTP Login »** affiche (format `xxxx@smtp-brevo.com`) =
+     `MAIL_USERNAME` — ce n'est PAS ton email de compte Brevo.
+3. **Settings > Senders & IPs** : **verifie** l'adresse d'envoi utilisee dans
+   `MAIL_FROM` (ex. `patgodson01@gmail.com`), sinon Brevo refuse l'envoi.
+4. Sur Render, definis ces variables :
+
 | Variable | Valeur | Description |
 |----------|--------|-------------|
-| `SMTP_HOST` | `smtp.gmail.com` | Serveur SMTP (Gmail par defaut) |
-| `SMTP_PORT` | `587` | Port SMTP (TLS) |
-| `SMTP_USER` | `votre-email@gmail.com` | Adresse email d'envoi |
-| `SMTP_PASSWORD` | `xxxx-xxxx-xxxx-xxxx` | Mot de passe d'application Gmail (16 caracteres, **pas** le mot de passe principal) |
-| `SMTP_FROM` | `votre-email@gmail.com` | Expediteur de l'email (vide = compte SMTP authentifie) |
+| `MAIL_SERVER` | `smtp-relay.brevo.com` | Serveur SMTP Brevo |
+| `MAIL_PORT` | `587` | Port STARTTLS |
+| `MAIL_USERNAME` | `xxxx@smtp-brevo.com` | Ton « SMTP Login » Brevo (PAS ton email) |
+| `MAIL_PASSWORD` | `xsmtpsib-...` | Ta clé SMTP Brevo (PAS ton mot de passe) |
+| `MAIL_FROM` | `TogoTruckConnect <patgodson01@gmail.com>` | Expediteur, adresse **verifiee** dans Brevo |
 
-> **Pour Gmail :** Activez la verification en 2 etapes, puis generez un
-> **mot de passe d'application** dans les parametres de securite Google
-> (https://myaccount.google.com/apppasswords). Copiez-le SANS espaces.
->
-> **Astuce de delivrabilite :** Gmail refuse souvent les envois dont l'adresse
-> `From` ne lui appartient pas (SPF/DKIM non alignes). Laissez `SMTP_FROM` vide
-> (ou = `SMTP_USER`) pour envoyer depuis l'adresse Gmail authentifiee, ou
-> configurez SPF/DKIM sur votre domaine avant d'utiliser `noreply@votre-domaine.com`.
->
-> **Alias supportes :** `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USERNAME`,
-> `MAIL_PASSWORD`, `MAIL_FROM` fonctionnent aussi (compatibles Flask-Mail).
-> Seul l'un des deux jeux est necessaire.
+> **Alias supportes :** `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`,
+> `SMTP_FROM` fonctionnent aussi (convention interne). Un seul jeu suffit.
+
+#### Alternative : Gmail (dev local uniquement)
+
+| Variable | Valeur |
+|----------|--------|
+| `MAIL_SERVER` | `smtp.gmail.com` |
+| `MAIL_PORT` | `587` |
+| `MAIL_USERNAME` | `ton-email@gmail.com` |
+| `MAIL_PASSWORD` | mot de passe d'application (16 car., `https://myaccount.google.com/apppasswords`) |
+| `MAIL_FROM` | `ton-email@gmail.com` |
 
 > **Erreur `[Errno 101] Network is unreachable` :** Gmail renvoie des adresses
 > IPv6 (AAAA) en plus des IPv4. Sur Render, l'instance n'a souvent pas de route
-> IPv6 sortante → la connexion echoue avec `Network is unreachable` AVANT le TLS.
-> Le code du backend force la resolution **IPv4** (`AF_INET`) dans
-> `backend/app/utils/email.py` (`_smtp_connect`) : aucun changement de variable
-> n'est requis, il suffit de redepartir le service avec le nouveau code.
+> IPv6 sortante. Le code du backend force la resolution **IPv4** (`AF_INET`)
+> dans `backend/app/utils/email.py` (`_smtp_connect`). Mais si le blocage vient
+> de Google (IP cloud), seul un relais type Brevo regle le probleme.
 
 #### Diagnostic SMTP en production
 
@@ -278,12 +304,16 @@ curl -X POST https://truck-zone-togo.onrender.com/api/admin/test-email \
   -H "Authorization: Bearer <TOKEN_ADMIN>" \
   -H "Content-Type: application/json"
 # Réponse si échec :
-# { "configured": true, "smtp_host": "...", ..., "ok": false, "error": "SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted...')" }
+# { "configured": true, "smtp_host": "...", ..., "ok": false, "error": "SMTPAuthenticationError: (535, b'5.7.8 Authentication failed...')" }
 ```
 
-Un `535 5.7.8 Username and Password not accepted` = mot de passe incorrect ou
-mot de passe d'application recree (revoke) : corrigez `SMTP_PASSWORD` sur Render
-et redepartez le service.
+> **`535 Authentication failed` (Brevo)** : le `MAIL_USERNAME` doit etre le
+> **« SMTP Login »** (`xxx@smtp-brevo.com`) et non le nom de domaine du serveur
+> ni ton email de compte. Le `MAIL_PASSWORD` doit etre la **clé SMTP**
+> (`xsmtpsib-...`), pas un mot de passe Brevo.
+>
+> **`554` / rejet** (Brevo) : l'adresse d'envoi (`MAIL_FROM`) n'est pas
+> verifiee dans **Settings > Senders & IPs**.
 
 ### 2.4 Stockage fichiers (MinIO)
 
@@ -575,11 +605,16 @@ JWT_SECRET_KEY=cle-generee-ici
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 REFRESH_TOKEN_EXPIRE_DAYS=7
-SMTP_HOST=smtp.gmail.com
+SMTP_HOST=smtp-relay.brevo.com
 SMTP_PORT=587
-SMTP_USER=votre-email@gmail.com
-SMTP_PASSWORD=votre-mot-de-passe-app
-SMTP_FROM=TruckZone Togo <noreply@truckzone-togo.com>
+SMTP_USER=xxxx@smtp-brevo.com
+SMTP_PASSWORD=xsmtpsib-votre-cle-smtp
+SMTP_FROM=TogoTruckConnect <patgodson01@gmail.com>
+MAIL_SERVER=smtp-relay.brevo.com
+MAIL_PORT=587
+MAIL_USERNAME=xxxx@smtp-brevo.com
+MAIL_PASSWORD=xsmtpsib-votre-cle-smtp
+MAIL_FROM=TogoTruckConnect <patgodson01@gmail.com>
 MINIO_ENDPOINT=votre-minio.com:9000
 MINIO_ACCESS_KEY=votre-access-key
 MINIO_SECRET_KEY=votre-secret-key
@@ -1059,11 +1094,11 @@ Cochez chaque element avant de considerer le deploiement comme termine :
 - [ ] `JWT_ALGORITHM` = `HS256`
 - [ ] `ACCESS_TOKEN_EXPIRE_MINUTES` = `30`
 - [ ] `REFRESH_TOKEN_EXPIRE_DAYS` = `7`
-- [ ] `SMTP_HOST` est configure
-- [ ] `SMTP_PORT` = `587`
-- [ ] `SMTP_USER` est configure
-- [ ] `SMTP_PASSWORD` est configure (mot de passe d'application Gmail)
-- [ ] `SMTP_FROM` est configure
+- [ ] `SMTP_HOST` / `MAIL_SERVER` = `smtp-relay.brevo.com`
+- [ ] `SMTP_PORT` / `MAIL_PORT` = `587`
+- [ ] `SMTP_USER` / `MAIL_USERNAME` = le « SMTP Login » Brevo (`xxx@smtp-brevo.com`)
+- [ ] `SMTP_PASSWORD` / `MAIL_PASSWORD` = la cle SMTP Brevo (`xsmtpsib-...`)
+- [ ] `SMTP_FROM` / `MAIL_FROM` = adresse d'envoi **verifiee** dans Brevo (Senders & IPs)
 - [ ] `MINIO_ENDPOINT` est configure
 - [ ] `MINIO_ACCESS_KEY` est configure
 - [ ] `MINIO_SECRET_KEY` est configure
