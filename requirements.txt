@@ -41,3 +41,4 @@ idna==3.18
 certifi==2026.6.17
 h11==0.16.0
 greenlet==3.5.3
+httpx==0.28.1
