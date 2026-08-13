@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import smtplib
+import socket
+import ssl
 import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -40,6 +42,51 @@ def _smtp_is_configured(settings) -> bool:
         and settings.smtp_user
         and settings.smtp_password
     )
+
+
+def _smtp_connect(host: str, port: int, *, ssl_mode: bool = False) -> smtplib.SMTP:
+    """
+    Ouvre une connexion SMTP en FORÇANT IPv4.
+
+    Gmail (smtp.gmail.com) renvoie des adresses IPv6 (AAAA) en plus des IPv4.
+    Sur Render, l'instance n'a souvent PAS de route IPv6 sortante : la connexion
+    échoue alors avec « [Errno 101] Network is unreachable » avant même le TLS.
+    La résolution explicite `AF_INET` garantit une connexion IPv4 (port 587
+    STARTTLS ou 465 SSL), sans changer la logique d'envoi.
+    """
+    timeout = 15
+    try:
+        addrinfo = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except socket.gaierror:
+        # Repli : si aucune adresse IPv4 n'existe, laisser le système résoudre.
+        addrinfo = socket.getaddrinfo(host, port, socket.SOCK_STREAM)
+    _, _, _, _, sockaddr = addrinfo[0]
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(sockaddr)
+    except Exception:
+        sock.close()
+        raise
+
+    server = smtplib.SMTP()
+    server.sock = sock
+    server.host = host
+    server._host = host  # Python 3.13 : `starttls()` lit `self._host` pour le SNI.
+    server.timeout = timeout
+
+    if ssl_mode:
+        # Port 465 : TLS immédiat (SNI + vérification du certificat Gmail).
+        context = ssl.create_default_context()
+        server.sock = context.wrap_socket(sock, server_hostname=host)
+
+    # Consomme le message de bienvenue (220) que `smtplib.SMTP(host, port)`
+    # lit dans `connect()` : sinon la réponse à EHLO serait faussement lue
+    # comme « 220 » et `starttls()` dirait STARTTLS non supporté.
+    server.getreply()
+
+    return server
 
 
 async def email_task(func, *args, **kwargs) -> None:
@@ -102,18 +149,25 @@ def _send_email(to_email: str, subject: str, html_body: str, plain_body: str | N
             settings.smtp_host,
             settings.smtp_port,
         )
-        if settings.smtp_port == 465:
-            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=15) as server:
-                server.ehlo()
-                server.login(settings.smtp_user, settings.smtp_password)
-                server.sendmail(from_addr, to_email, msg.as_string())
-        else:
-            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
-                server.ehlo()
+        # Connexion forcée IPv4 (évite « [Errno 101] Network is unreachable »
+        # quand Render ne route pas l'IPv6 renvoyée par Gmail).
+        ssl_mode = settings.smtp_port == 465
+        server = _smtp_connect(settings.smtp_host, settings.smtp_port, ssl_mode=ssl_mode)
+        try:
+            server.ehlo()
+            if not ssl_mode:
                 server.starttls()
                 server.ehlo()
-                server.login(settings.smtp_user, settings.smtp_password)
-                server.sendmail(from_addr, to_email, msg.as_string())
+            server.login(settings.smtp_user, settings.smtp_password)
+            server.sendmail(from_addr, to_email, msg.as_string())
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                try:
+                    server.close()
+                except Exception:
+                    pass
         logger.info("[EMAIL] Envoyé « %s » à %s", subject, to_email)
         return True
     except EmailSendError:

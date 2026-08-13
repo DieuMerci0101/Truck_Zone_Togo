@@ -257,6 +257,14 @@ Toutes les variables ci-dessous doivent etre configurees dans Render
 >
 > **Alias supportes :** `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USERNAME`,
 > `MAIL_PASSWORD`, `MAIL_FROM` fonctionnent aussi (compatibles Flask-Mail).
+> Seul l'un des deux jeux est necessaire.
+
+> **Erreur `[Errno 101] Network is unreachable` :** Gmail renvoie des adresses
+> IPv6 (AAAA) en plus des IPv4. Sur Render, l'instance n'a souvent pas de route
+> IPv6 sortante → la connexion echoue avec `Network is unreachable` AVANT le TLS.
+> Le code du backend force la resolution **IPv4** (`AF_INET`) dans
+> `backend/app/utils/email.py` (`_smtp_connect`) : aucun changement de variable
+> n'est requis, il suffit de redepartir le service avec le nouveau code.
 
 #### Diagnostic SMTP en production
 

@@ -65,9 +65,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("smtp_port", "SMTP_PORT", "MAIL_PORT"),
     )
     smtp_user: str = Field(
-        default="",
+        default="patgodson01@gmail.com",
         validation_alias=AliasChoices("smtp_user", "SMTP_USER", "SMTP_USERNAME", "MAIL_USERNAME", "MAIL_USER"),
     )
+    # Mot de passe : JAMAIS de valeur par défaut codée en dur. Fournir via
+    # l'environnement (`.env` en dev, variables Render en prod) :
+    #   MAIL_PASSWORD / SMTP_PASSWORD = mot de passe d'application Gmail.
     smtp_password: str = Field(
         default="",
         validation_alias=AliasChoices("smtp_password", "SMTP_PASSWORD", "SMTP_PASS", "MAIL_PASSWORD", "MAIL_PASS"),
@@ -77,7 +80,7 @@ class Settings(BaseSettings):
         # Avec Gmail, utiliser l'adresse du compte authentifié améliore la
         # délivrabilité (SPF/DKIM alignés) — éviter les domaines tiers.
         # Accepte EMAIL_FROM, MAIL_FROM, SMTP_FROM (doc de déploiement) ou MAIL_DEFAULT_SENDER.
-        default="",
+        default="patgodson01@gmail.com",
         validation_alias=AliasChoices("email_from", "EMAIL_FROM", "MAIL_FROM", "SMTP_FROM", "MAIL_DEFAULT_SENDER"),
     )
 
