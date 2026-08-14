@@ -133,6 +133,7 @@ class TypeConversation(str, enum.Enum):
 class TypeMessage(str, enum.Enum):
     texte = "texte"
     image = "image"
+    video = "video"
     fichier = "fichier"
     audio = "audio"
 

@@ -28,15 +28,27 @@ class NotificationOut(BaseModel):
 
     @classmethod
     def model_validate(cls, obj, *args, **kwargs):
-        data = super().model_validate(obj, *args, **kwargs)
-        if getattr(obj, "metadata_json", None):
-            import json
+        # NB: on construit explicitement un dict au lieu de valider l'objet
+        # ORM directement : l'ORM expose un attribut SQLAlchemy `metadata`
+        # (MetaData) qui entrerait en collision avec le champ pydantic.
+        import json
 
+        payload = {
+            "id": obj.id,
+            "destinataire_id": obj.destinataire_id,
+            "titre": obj.titre,
+            "contenu": obj.contenu,
+            "type": obj.type,
+            "lu": obj.lu,
+            "lien": obj.lien,
+            "created_at": obj.created_at,
+        }
+        if getattr(obj, "metadata_json", None):
             try:
-                data.metadata = json.loads(obj.metadata_json)
+                payload["metadata"] = json.loads(obj.metadata_json)
             except (json.JSONDecodeError, TypeError):
-                data.metadata = None
-        return data
+                payload["metadata"] = None
+        return super().model_validate(payload)
 
 
 class NotificationPreferencesUpdate(BaseModel):

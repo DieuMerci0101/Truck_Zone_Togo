@@ -50,7 +50,7 @@ class ConversationOut(BaseModel):
 
 class MessageCreate(BaseModel):
     contenu: str = Field(..., min_length=1)
-    type: str = Field(default="texte", pattern=r"^(texte|image|fichier|audio)$")
+    type: str = Field(default="texte", pattern=r"^(texte|image|video|fichier|audio)$")
 
 
 class MessageOut(BaseModel):

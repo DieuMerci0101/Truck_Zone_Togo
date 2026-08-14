@@ -111,7 +111,7 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
 
             message_type = data.get("type", "texte")
 
-            if message_type in ("texte", "audio"):
+            if message_type in ("texte", "audio", "image", "video", "fichier"):
                 async with async_session() as db:
                     media_url = data.get("media_url")
                     contenu = data.get("contenu", "")
@@ -139,6 +139,13 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                     )
                     sender = sender_result.scalar_one_or_none()
 
+                    extrait = {
+                        "audio": "Message vocal",
+                        "image": "📷 Photo",
+                        "video": "🎬 Vidéo",
+                        "fichier": "📎 Document",
+                    }.get(message_type)
+
                     # Notification pour les autres participants
                     from app.routers.conversations import _notifier_autres_participants
                     await _notifier_autres_participants(
@@ -148,6 +155,7 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                         contenu,
                         db,
                         audio=(message_type == "audio"),
+                        extrait=extrait,
                     )
 
                     await db.commit()

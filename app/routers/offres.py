@@ -10,7 +10,6 @@ from app.database import get_db
 from app.models.user import User
 from app.models.offre import OffreRecrutement
 from app.models.candidature import Candidature
-from app.models.conversation import Conversation, ConversationParticipant
 from app.models.proprietaire import ProfilProprietaire
 from app.routers.auth import get_current_user
 from app.utils.notifications import notify_user
@@ -163,38 +162,26 @@ async def postuler_offre(
     )
     profil = profil_result.scalar_one_or_none()
     if profil:
-        owner_user_id = str(profil.user_id)
+        owner_user_id = profil.user_id
 
-        conv_check = await db.execute(
-            select(ConversationParticipant).join(
-                Conversation, ConversationParticipant.conversation_id == Conversation.id
-            ).where(
-                ConversationParticipant.user_id == current_user.id,
+        # Ouverture automatique (Module 4) : conversation privée entre le
+        # candidat et le propriétaire, réutilisée si elle existe déjà.
+        from app.routers.conversations import get_or_create_direct_conversation
+        from app.models.message import Message
+
+        conv = await get_or_create_direct_conversation(db, current_user.id, owner_user_id)
+        conversation_id = str(conv.id)
+
+        db.add(
+            Message(
+                id=uuid.uuid4(),
+                conversation_id=conv.id,
+                expediteur_id=current_user.id,
+                contenu=message,
+                type="texte",
             )
         )
-        existing_conv = None
-        for cp in conv_check.scalars().all():
-            other_cp = await db.execute(
-                select(ConversationParticipant).where(
-                    ConversationParticipant.conversation_id == cp.conversation_id,
-                    ConversationParticipant.user_id == owner_user_id,
-                )
-            )
-            if other_cp.scalar_one_or_none():
-                existing_conv = cp.conversation_id
-                break
-
-        if existing_conv:
-            conversation_id = str(existing_conv)
-        else:
-            conv = Conversation(type="directe")
-            db.add(conv)
-            await db.flush()
-            db.add(ConversationParticipant(conversation_id=conv.id, user_id=current_user.id))
-            await db.flush()
-            db.add(ConversationParticipant(conversation_id=conv.id, user_id=owner_user_id))
-            await db.flush()
-            conversation_id = str(conv.id)
+        conv.updated_at = datetime.now(timezone.utc)
 
         await notify_user(
             db,
@@ -202,7 +189,10 @@ async def postuler_offre(
             titre="Nouvelle candidature reçue",
             contenu=f"{current_user.nom_complet} a postulé à votre offre « {offre.titre} ».",
             type_notif="admin",
-            lien=f"/dashboard/proprietaire/offres",
+            lien=f"/dashboard/chat?conv={conversation_id}",
+            metadata={"conversation_id": conversation_id, "offre_id": str(offre_id)},
+            email=True,
+            push=True,
         )
 
     await notify_user(

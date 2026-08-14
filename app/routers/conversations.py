@@ -51,6 +51,36 @@ async def _existing_conversation_id(
     return existing.conversation_id if existing else None
 
 
+async def get_or_create_direct_conversation(
+    db: AsyncSession,
+    user_a_id: uuid.UUID,
+    user_b_id: uuid.UUID,
+) -> Conversation:
+    """
+    Retourne la conversation directe existante entre `user_a_id` et
+    `user_b_id`, ou la crée (sans message) si aucune n'existe. Idempotent :
+    utilisé par l'ouverture automatique des conversations (candidatures,
+    demande d'assistance, clic « Contacter »).
+    """
+    if str(user_a_id) == str(user_b_id):
+        raise HTTPException(status_code=400, detail="Impossible de se contacter soi-même")
+
+    existing_id = await _existing_conversation_id(user_a_id, user_b_id, db)
+    if existing_id:
+        result = await db.execute(
+            select(Conversation).where(Conversation.id == existing_id)
+        )
+        return result.scalar_one()
+
+    conv = Conversation(id=uuid.uuid4(), type="directe")
+    db.add(conv)
+    await db.flush()
+    db.add(ConversationParticipant(conversation_id=conv.id, user_id=user_a_id))
+    db.add(ConversationParticipant(conversation_id=conv.id, user_id=user_b_id))
+    await db.flush()
+    return conv
+
+
 async def _build_conversation_out(
     conv: Conversation,
     db: AsyncSession,
@@ -311,6 +341,7 @@ async def _notifier_autres_participants(
     contenu: str,
     db: AsyncSession,
     audio: bool = False,
+    extrait: str | None = None,
 ) -> None:
     """Crée une notification pour chaque autre participant de la conversation."""
     from app.utils.notifications import notify_user
@@ -325,19 +356,37 @@ async def _notifier_autres_participants(
     if not destinataires:
         return
     preview = contenu.strip()[:100] if contenu and contenu.strip() else None
-    extrait = preview or ("Message vocal" if audio else "Nouveau message")
+    extrait_final = (
+        preview
+        or extrait
+        or ("Message vocal" if audio else "Nouveau message")
+    )
     for uid in destinataires:
         await notify_user(
             db,
             user_id=uid,
             titre="Nouveau message",
-            contenu=f"{expediteur_nom} : {extrait}",
+            contenu=f"{expediteur_nom} : {extrait_final}",
             type_notif="message",
             lien=f"/dashboard/chat?conv={conversation_id}",
             metadata={"conversation_id": str(conversation_id), "audio": audio},
             email=True,
             push=True,
         )
+
+
+def _message_preview(msg: Message | None) -> str | None:
+    """Aperçu du dernier message : le texte, ou un libellé pour les médias."""
+    if msg is None:
+        return None
+    if msg.contenu and msg.contenu.strip():
+        return msg.contenu
+    return {
+        "audio": "🎤 Message vocal",
+        "image": "📷 Photo",
+        "video": "🎬 Vidéo",
+        "fichier": "📎 Document",
+    }.get(msg.type, "Nouveau message")
 
 
 @router.get("/", response_model=list[ConversationOut])
@@ -380,7 +429,7 @@ async def list_conversations(
             type=conv.type.value if hasattr(conv.type, "value") else conv.type,
             created_at=conv.created_at,
             updated_at=conv.updated_at,
-            last_message=last_msg.contenu if last_msg else None,
+            last_message=_message_preview(last_msg),
             last_message_at=last_msg.created_at if last_msg else None,
             participants=participants,
         ))
@@ -527,7 +576,7 @@ async def get_conversation(
         type=conv.type.value if hasattr(conv.type, "value") else conv.type,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
-        last_message=last_msg.contenu if last_msg else None,
+        last_message=_message_preview(last_msg),
         last_message_at=last_msg.created_at if last_msg else None,
         participants=participants,
     )
@@ -615,6 +664,122 @@ async def send_message(
 
 
 AUDIO_ALLOWED = {"audio/webm", "audio/mp3", "audio/mpeg", "audio/ogg", "audio/wav"}
+
+# Limite de taille des pièces jointes (25 Mo) — au-delà, refus clair.
+MAX_MEDIA_BYTES = 25 * 1024 * 1024
+
+IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "image/heic"}
+VIDEO_TYPES = {"video/mp4", "video/webm", "video/quicktime", "video/x-m4v"}
+# Documents (fiches techniques, devis, PV, contrats…).
+DOCUMENT_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/plain",
+    "text/csv",
+}
+DOCUMENT_LABELS = {
+    "application/pdf": "PDF",
+    "application/msword": "Word",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word",
+    "application/vnd.ms-excel": "Excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel",
+    "application/vnd.ms-powerpoint": "PowerPoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PowerPoint",
+    "text/plain": "Texte",
+    "text/csv": "CSV",
+}
+
+
+@router.post("/{conversation_id}/messages/media", response_model=MessageOut, status_code=201)
+async def send_media_message(
+    conversation_id: uuid.UUID,
+    file: UploadFile = File(...),
+    contenu: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Envoie une pièce jointe (photo, vidéo ou document) dans une conversation.
+
+    Le type du message (`image`, `video` ou `fichier`) est déduit du
+    Content-Type du fichier. Le fichier est stocké de façon permanente sur le
+    Cloud Storage (Supabase) — ou sur le disque local en repli.
+    """
+    await _get_conversation_with_access(conversation_id, current_user, db)
+
+    content_type = (file.content_type or "").lower()
+    if content_type.startswith("audio/"):
+        if content_type not in AUDIO_ALLOWED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Format audio non supporté: {file.content_type}",
+            )
+        message_type, category, extrait = "audio", "audios", "Message vocal"
+    elif content_type in IMAGE_TYPES:
+        message_type, category, extrait = "image", "photos", "📷 Photo"
+    elif content_type in VIDEO_TYPES:
+        message_type, category, extrait = "video", "videos", "🎬 Vidéo"
+    elif content_type in DOCUMENT_TYPES:
+        message_type, category, extrait = "fichier", "documents", "📎 Document"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Type de fichier non supporté. Formats acceptés : images "
+                "(jpg, png, webp), vidéos (mp4, webm, mov), documents "
+                "(pdf, doc, xls, txt) et audio."
+            ),
+        )
+
+    content = await file.read()
+    if len(content) > MAX_MEDIA_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Fichier trop volumineux (maximum 25 Mo)",
+        )
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Fichier vide")
+
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else ""
+    media_url = save_upload(content, category, ext)
+
+    msg = Message(
+        id=uuid.uuid4(),
+        conversation_id=conversation_id,
+        expediteur_id=current_user.id,
+        contenu=contenu or "",
+        type=message_type,
+        media_url=media_url,
+    )
+    db.add(msg)
+
+    conv_result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    conv = conv_result.scalar_one()
+    conv.updated_at = datetime.now(timezone.utc)
+
+    await db.flush()
+    await db.refresh(msg)
+    await _notifier_autres_participants(
+        conversation_id,
+        current_user.id,
+        current_user.nom_complet,
+        contenu or "",
+        db,
+        audio=(message_type == "audio"),
+        extrait=extrait,
+    )
+    result = await db.execute(
+        select(Message).where(Message.id == msg.id).options(selectinload(Message.expediteur))
+    )
+    msg_with_sender = result.scalar_one()
+    return _enrich_message(msg_with_sender)
 
 
 @router.post("/{conversation_id}/messages/audio", response_model=MessageOut, status_code=201)

@@ -622,19 +622,46 @@ async def take_assistance(
     assistance.mecanicien = profil
 
     from app.assistance_events import broadcast_assistance_event
+    from app.routers.conversations import get_or_create_direct_conversation
+    from app.models.message import Message
     from app.utils.notifications import notify_user
 
     await broadcast_assistance_event(
         {"type": "assistance_taken", "demande_id": str(assistance_id)}
     )
+
+    # ── Ouverture automatique (Module 4) : conversation privée immédiate
+    #    entre le demandeur et le mécanicien pour coordonner l'arrivée.
+    conv = await get_or_create_direct_conversation(
+        db, assistance.demandeur_id, current_user.id
+    )
+    premier_message = (
+        f"Bonjour {assistance.demandeur.nom_complet}, je viens d'accepter "
+        f"votre demande d'assistance (« {assistance.type_panne} »). J'arrive !"
+    )
+    db.add(
+        Message(
+            id=uuid.uuid4(),
+            conversation_id=conv.id,
+            expediteur_id=current_user.id,
+            contenu=premier_message,
+            type="texte",
+        )
+    )
+    conv.updated_at = now
+
     await notify_user(
         db,
         user_id=assistance.demandeur_id,
         titre="Un mécanicien a accepté votre demande",
         contenu=f"{current_user.nom_complet} prend en charge votre demande d'assistance. Il arrive !",
         type_notif="assistance",
-        lien="/dashboard/chauffeur/assistance",
-        metadata={"demande_id": str(assistance_id), "mecanicien_id": str(profil.id)},
+        lien=f"/dashboard/chat?conv={conv.id}",
+        metadata={
+            "demande_id": str(assistance_id),
+            "mecanicien_id": str(profil.id),
+            "conversation_id": str(conv.id),
+        },
         email=True,
         push=True,
     )
@@ -643,6 +670,7 @@ async def take_assistance(
         "message": "Demande prise en charge",
         "statut": "pris_en_charge",
         "pris_en_charge_at": now.isoformat(),
+        "conversation_id": str(conv.id),
     }
 
 

@@ -73,6 +73,8 @@ async def init_db():
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'casier'",
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'diplome'",
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'photo_identite'",
+            "ALTER TYPE type_message ADD VALUE IF NOT EXISTS 'video'",
+            "ALTER TYPE type_message ADD VALUE IF NOT EXISTS 'audio'",
         ]:
             try:
                 await conn.execute(text(stmt))
