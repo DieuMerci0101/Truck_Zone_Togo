@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING
+from datetime import datetime
 
 from sqlalchemy import DateTime, Enum, ForeignKey, String, Text, func  # type: ignore
 from sqlalchemy.dialects.postgresql import UUID  # type: ignore
@@ -42,6 +43,11 @@ class DemandeAssistance(Base):
         Enum(StatutAssistance, name="statut_assistance", create_constraint=True),
         nullable=False,
         default=StatutAssistance.en_attente,
+    )
+    # « Premier arrivé » : horodatage du moment où un mécanicien a pris la
+    # demande en charge (verrouillage atomique côté API).
+    pris_en_charge_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

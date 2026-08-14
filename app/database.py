@@ -56,6 +56,7 @@ async def init_db():
         for stmt in [
             "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)",
             "ALTER TYPE etat_camion ADD VALUE IF NOT EXISTS 'bon_etat'",
+            "ALTER TYPE statut_assistance ADD VALUE IF NOT EXISTS 'pris_en_charge'",
             "ALTER TABLE profils_mecanicien ADD COLUMN IF NOT EXISTS proof_document_url VARCHAR(500)",
             "ALTER TABLE profils_mecanicien ADD COLUMN IF NOT EXISTS verification_status VARCHAR(50) DEFAULT 'pending_upload'",
             "ALTER TABLE profils_mecanicien ADD COLUMN IF NOT EXISTS position_active BOOLEAN DEFAULT false",
@@ -65,6 +66,7 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS country_id UUID REFERENCES countries(id) ON DELETE SET NULL",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_profil_version INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS metadata_json TEXT",
+            "ALTER TABLE demandes_assistance ADD COLUMN IF NOT EXISTS pris_en_charge_at TIMESTAMPTZ",
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'passeport'",
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'rccm'",
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'patente'",

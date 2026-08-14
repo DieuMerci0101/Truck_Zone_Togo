@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy.orm import selectinload
@@ -63,6 +63,37 @@ def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return R * 2 * math.asin(math.sqrt(a))
 
 
+async def _mecaniciens_proches(
+    db: AsyncSession,
+    lat: float,
+    lng: float,
+    max_rayon_km: float = 150,
+) -> list[tuple[ProfilMecanicien, float]]:
+    """
+    Retourne les mécaniciens ayant ACTIVÉ leur position temps réel, vérifiés,
+    triés par distance croissante, et dans la limite de leur rayon
+    d'intervention (borné par `max_rayon_km`).
+    """
+    result = await db.execute(
+        select(ProfilMecanicien)
+        .options(selectinload(ProfilMecanicien.user))
+        .where(
+            ProfilMecanicien.position_active == True,  # noqa: E712
+            ProfilMecanicien.verification_status == "approved",
+        )
+    )
+    proches: list[tuple[ProfilMecanicien, float]] = []
+    for p in result.scalars().all():
+        p_lat, p_lng = _parse_wkt(p.localisation)
+        if p_lat == 0.0 and p_lng == 0.0:
+            continue
+        dist = _haversine(lat, lng, p_lat, p_lng)
+        if dist <= min(p.rayon_intervention or 30, max_rayon_km):
+            proches.append((p, round(dist, 1)))
+    proches.sort(key=lambda x: x[1])
+    return proches
+
+
 class MecanicienPositionUpdate(BaseModel):
     localisation_lat: float = Field(..., ge=-90, le=90)
     localisation_lng: float = Field(..., ge=-180, le=180)
@@ -73,8 +104,11 @@ class MecanicienActivationRequest(BaseModel):
     localisation_lng: float | None = Field(None, ge=-180, le=180)
 
 
-def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
-    return AssistanceOut.model_validate(a)
+def _assistance_out(a: DemandeAssistance, distance_km: float | None = None) -> AssistanceOut:
+    out = AssistanceOut.model_validate(a)
+    if distance_km is not None:
+        out.distance_km = distance_km
+    return out
 
 
 async def _get_or_create_profil(
@@ -446,6 +480,7 @@ async def create_assistance(
     assistance.demandeur = current_user
 
     from app.utils.notifications import notify_all_admins, notify_user
+    from app.assistance_events import broadcast_assistance_event
     await notify_all_admins(
         db,
         titre="Nouvelle demande d'assistance",
@@ -453,6 +488,26 @@ async def create_assistance(
         type_notif="assistance",
         lien="/admin/dashboard/assistance",
     )
+
+    # ── Module 3 : notifier les mécaniciens à proximité (position active,
+    #    vérifiés, dans leur rayon d'intervention) + push + rafraîchissement
+    #    temps réel de la file d'attente via WebSocket.
+    proches = await _mecaniciens_proches(db, data.localisation_lat, data.localisation_lng)
+    demandeur_nom = current_user.nom_complet
+    type_panne_valeur = data.type_panne.value if hasattr(data.type_panne, "value") else str(data.type_panne)
+    for mecanicien, dist in proches:
+        await notify_user(
+            db,
+            user_id=mecanicien.user_id,
+            titre="Nouvelle demande d'assistance à proximité",
+            contenu=f"{demandeur_nom} demande « {type_panne_valeur} » à {dist:.0f} km de vous.",
+            type_notif="assistance",
+            lien="/dashboard/mecanicien/assistance",
+            metadata={"demande_id": str(assistance.id), "distance_km": dist},
+            push=True,
+        )
+    await broadcast_assistance_event({"type": "assistance_new", "demande_id": str(assistance.id)})
+
     urgence_valeur = data.urgence.value if hasattr(data.urgence, "value") else str(data.urgence)
     est_urgent = urgence_valeur.lower() in ("haute", "critique")
     await notify_user(
@@ -473,10 +528,19 @@ async def create_assistance(
 
 @router.get("/assistance/disponibles", response_model=list[AssistanceOut])
 async def list_available_assistance(
+    lat: float | None = Query(None, ge=-90, le=90),
+    lng: float | None = Query(None, ge=-180, le=180),
+    rayon_km: float | None = Query(None, gt=0),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Liste toutes les demandes actives (non terminées) pour les mécaniciens."""
+    """
+    Liste les demandes actives (non terminées) pour les mécaniciens.
+    Si `lat`/`lng` sont fournis, chaque demande est enrichie de sa distance
+    (`distance_km`) et filtrée par `rayon_km` (si fourni) — la file d'attente
+    « premier arrivé » se limite ainsi aux interventions géographiquement
+    pertinentes pour le mécanicien.
+    """
     result = await db.execute(
         select(DemandeAssistance)
         .options(
@@ -486,7 +550,22 @@ async def list_available_assistance(
         .where(DemandeAssistance.statut != "terminee")
         .order_by(DemandeAssistance.created_at.desc())
     )
-    return [_assistance_out(a) for a in result.scalars().all()]
+    demandes = result.scalars().all()
+
+    items: list[AssistanceOut] = []
+    for d in demandes:
+        dist = None
+        if lat is not None and lng is not None:
+            d_lat, d_lng = _parse_wkt(d.localisation)
+            if d_lat != 0.0 and d_lng != 0.0:
+                dist = round(_haversine(lat, lng, d_lat, d_lng), 1)
+                if rayon_km and dist > rayon_km:
+                    continue
+        items.append(_assistance_out(d, distance_km=dist))
+
+    if lat is not None and lng is not None:
+        items.sort(key=lambda x: (x.distance_km is None, x.distance_km or 0))
+    return items
 
 
 @router.put("/assistance/{assistance_id}/prendre")
@@ -495,17 +574,13 @@ async def take_assistance(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Le mécanicien prend en charge une demande."""
-    result = await db.execute(
-        select(DemandeAssistance).where(DemandeAssistance.id == assistance_id)
-    )
-    assistance = result.scalar_one_or_none()
-    if not assistance:
-        raise HTTPException(status_code=404, detail="Demande non trouvée")
-    if assistance.statut != "en_attente":
-        raise HTTPException(status_code=400, detail="Demande déjà prise en charge")
+    """
+    Le mécanicien prend en charge une demande — règle du « premier arrivé ».
 
-    # Récupérer le profil mécanicien
+    Le passage `en_attente → pris_en_charge` est ATOMIQUE (UPDATE conditionnel
+    sur le statut) : si deux mécaniciens cliquent en même temps, un seul obtient
+    la demande ; l'autre reçoit 400 « déjà prise ». Impossible de « doubler ».
+    """
     profil_result = await db.execute(
         select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
     )
@@ -513,10 +588,62 @@ async def take_assistance(
     if not profil:
         raise HTTPException(status_code=400, detail="Profil mécanicien introuvable")
 
-    assistance.mecanicien_id = profil.id
-    assistance.statut = "pris_en_charge"
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        update(DemandeAssistance)
+        .where(
+            DemandeAssistance.id == assistance_id,
+            DemandeAssistance.statut == "en_attente",
+        )
+        .values(
+            mecanicien_id=profil.id,
+            statut="pris_en_charge",
+            pris_en_charge_at=now,
+        )
+    )
     await db.flush()
-    return {"message": "Demande prise en charge", "statut": "pris_en_charge"}
+
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Demande déjà prise en charge par un autre mécanicien",
+        )
+
+    # Informe le demandeur en temps réel qu'un mécanicien arrive.
+    dem_result = await db.execute(
+        select(DemandeAssistance)
+        .options(
+            selectinload(DemandeAssistance.demandeur),
+            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
+        )
+        .where(DemandeAssistance.id == assistance_id)
+    )
+    assistance = dem_result.scalar_one()
+    assistance.mecanicien = profil
+
+    from app.assistance_events import broadcast_assistance_event
+    from app.utils.notifications import notify_user
+
+    await broadcast_assistance_event(
+        {"type": "assistance_taken", "demande_id": str(assistance_id)}
+    )
+    await notify_user(
+        db,
+        user_id=assistance.demandeur_id,
+        titre="Un mécanicien a accepté votre demande",
+        contenu=f"{current_user.nom_complet} prend en charge votre demande d'assistance. Il arrive !",
+        type_notif="assistance",
+        lien="/dashboard/chauffeur/assistance",
+        metadata={"demande_id": str(assistance_id), "mecanicien_id": str(profil.id)},
+        email=True,
+        push=True,
+    )
+
+    return {
+        "message": "Demande prise en charge",
+        "statut": "pris_en_charge",
+        "pris_en_charge_at": now.isoformat(),
+    }
 
 
 @router.get("/assistance/{assistance_id}", response_model=AssistanceOut)
@@ -569,6 +696,27 @@ async def update_assistance_statut(
 
     assistance.statut = data.statut
     await db.flush()
+
+    # ── Module 3 : prévenir le demandeur quand l'intervention est terminée.
+    if data.statut == "terminee" and assistance.demandeur_id:
+        from app.assistance_events import broadcast_assistance_event
+        from app.utils.notifications import notify_user
+
+        await broadcast_assistance_event(
+            {"type": "assistance_taken", "demande_id": str(assistance_id)}
+        )
+        await notify_user(
+            db,
+            user_id=assistance.demandeur_id,
+            titre="Intervention terminée",
+            contenu="Votre demande d'assistance a été marquée comme réparée par le mécanicien.",
+            type_notif="assistance",
+            lien="/dashboard/chauffeur/assistance",
+            metadata={"demande_id": str(assistance_id)},
+            email=True,
+            push=True,
+        )
+
     return {"message": "Statut mis à jour", "statut": assistance.statut}
 
 

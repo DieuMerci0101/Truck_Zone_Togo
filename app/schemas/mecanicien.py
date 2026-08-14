@@ -159,6 +159,8 @@ class AssistanceOut(BaseModel):
     statut: str
     localisation_lat: Optional[float] = None
     localisation_lng: Optional[float] = None
+    distance_km: Optional[float] = None
+    pris_en_charge_at: Optional[datetime] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

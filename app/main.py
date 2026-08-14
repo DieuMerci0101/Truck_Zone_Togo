@@ -11,6 +11,7 @@ from app.database import init_db, close_db, async_session
 from fastapi.staticfiles import StaticFiles
 from app.routers import auth, chauffeurs, proprietaires, mecaniciens, conversations, incidents, admin, notifications, offres, users, countries, documents
 from app.websocket_chat import router as ws_router
+from app.assistance_events import router as assistance_ws_router
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -151,6 +152,7 @@ app.include_router(users.router)
 app.include_router(countries.router)
 app.include_router(documents.router)
 app.include_router(ws_router)
+app.include_router(assistance_ws_router)
 
 # Crée les dossiers d'upload avant le montage statique pour éviter un crash
 # de démarrage sur Render (filesystem éphémère) et des erreurs d'écriture.
