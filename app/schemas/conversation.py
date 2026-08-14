@@ -51,15 +51,20 @@ class ConversationOut(BaseModel):
 class MessageCreate(BaseModel):
     contenu: str = Field(..., min_length=1)
     type: str = Field(default="texte", pattern=r"^(texte|image|video|fichier|audio)$")
+    reply_to_message_id: Optional[uuid.UUID] = None
 
 
 class MessageOut(BaseModel):
     id: uuid.UUID
     conversation_id: uuid.UUID
     expediteur_id: uuid.UUID
+    destinataire_id: Optional[uuid.UUID] = None
     contenu: str
     type: str
     media_url: Optional[str] = None
+    reply_to_message_id: Optional[uuid.UUID] = None
+    # Message d'origine complet (Reply-To), embarqué pour affichage direct.
+    reply_to: Optional["MessageOut"] = None
     lu: bool
     created_at: datetime
     expediteur_nom: Optional[str] = None
@@ -67,3 +72,6 @@ class MessageOut(BaseModel):
     expediteur_role: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+
+MessageOut.model_rebuild()

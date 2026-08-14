@@ -90,7 +90,14 @@ class User(TimestampMixin, Base):
         "OTPReset", back_populates="user"
     )
     messages_envoyes: Mapped[list["Message"]] = relationship(
-        "Message", back_populates="expediteur"
+        "Message",
+        back_populates="expediteur",
+        foreign_keys="Message.expediteur_id",
+    )
+    messages_recus: Mapped[list["Message"]] = relationship(
+        "Message",
+        foreign_keys="Message.destinataire_id",
+        viewonly=True,
     )
     conversations: Mapped[list["ConversationParticipant"]] = relationship(
         "ConversationParticipant", back_populates="user"

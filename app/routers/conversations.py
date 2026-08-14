@@ -583,22 +583,67 @@ async def get_conversation(
 
 
 def _enrich_message(msg: Message) -> MessageOut:
-    """Build a MessageOut with sender info populated from the message relationship."""
+    """Build a MessageOut with sender info populated from the message relationship,
+    and the full referenced (Reply-To) message embedded."""
     sender = msg.expediteur
     type_val = msg.type.value if hasattr(msg.type, "value") else msg.type
+
+    reply_to_out = None
+    if msg.reply_to is not None:
+        reply_sender = msg.reply_to.expediteur
+        reply_type = (
+            msg.reply_to.type.value
+            if hasattr(msg.reply_to.type, "value")
+            else msg.reply_to.type
+        )
+        reply_to_out = MessageOut(
+            id=msg.reply_to.id,
+            conversation_id=msg.reply_to.conversation_id,
+            expediteur_id=msg.reply_to.expediteur_id,
+            destinataire_id=msg.reply_to.destinataire_id,
+            contenu=msg.reply_to.contenu,
+            type=reply_type,
+            media_url=msg.reply_to.media_url,
+            reply_to_message_id=msg.reply_to.reply_to_message_id,
+            reply_to=None,
+            lu=msg.reply_to.lu,
+            created_at=msg.reply_to.created_at,
+            expediteur_nom=reply_sender.nom_complet if reply_sender else None,
+            expediteur_avatar=reply_sender.photo_profil if reply_sender else None,
+            expediteur_role=(
+                reply_sender.role.value
+                if reply_sender and hasattr(reply_sender.role, "value")
+                else (reply_sender.role if reply_sender else None)
+            ),
+        )
+
     return MessageOut(
         id=msg.id,
         conversation_id=msg.conversation_id,
         expediteur_id=msg.expediteur_id,
+        destinataire_id=msg.destinataire_id,
         contenu=msg.contenu,
         type=type_val,
         media_url=msg.media_url,
+        reply_to_message_id=msg.reply_to_message_id,
+        reply_to=reply_to_out,
         lu=msg.lu,
         created_at=msg.created_at,
         expediteur_nom=sender.nom_complet if sender else None,
         expediteur_avatar=sender.photo_profil if sender else None,
         expediteur_role=sender.role.value if sender and hasattr(sender.role, "value") else (sender.role if sender else None),
     )
+
+
+async def _broadcast_socket(payload: dict, conversation_id) -> None:
+    """Diffuse `receive_message` à la room de la conversation (temps réel)."""
+    from app.socket_chat import sio
+
+    try:
+        await sio.emit("receive_message", payload, room=str(conversation_id))
+    except Exception:
+        # Le temps réel ne doit jamais faire échouer l'envoi REST.
+        pass
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])
@@ -613,7 +658,10 @@ async def list_messages(
     result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conversation_id)
-        .options(selectinload(Message.expediteur))
+        .options(
+            selectinload(Message.expediteur),
+            selectinload(Message.reply_to).selectinload(Message.expediteur),
+        )
         .order_by(Message.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -631,12 +679,31 @@ async def send_message(
 ):
     await _get_conversation_with_access(conversation_id, current_user, db)
 
+    # Validation du message référencé (Reply-To) : doit appartenir à la conversation.
+    reply_uuid = data.reply_to_message_id
+    if reply_uuid is not None:
+        ref_result = await db.execute(
+            select(Message).where(
+                Message.id == reply_uuid,
+                Message.conversation_id == conversation_id,
+            )
+        )
+        if ref_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Message référencé introuvable dans cette conversation",
+            )
+
     msg = Message(
         id=uuid.uuid4(),
         conversation_id=conversation_id,
         expediteur_id=current_user.id,
+        destinataire_id=await _compute_recipient_for_conversation(
+            conversation_id, current_user.id, db
+        ),
         contenu=data.contenu,
         type=data.type,
+        reply_to_message_id=reply_uuid,
     )
     db.add(msg)
 
@@ -655,12 +722,59 @@ async def send_message(
         data.contenu,
         db,
     )
-    # Re-fetch with expediteur relation loaded
+    # Re-fetch with expediteur + reply_to relations loaded
     result = await db.execute(
-        select(Message).where(Message.id == msg.id).options(selectinload(Message.expediteur))
+        select(Message).where(Message.id == msg.id).options(
+            selectinload(Message.expediteur),
+            selectinload(Message.reply_to).selectinload(Message.expediteur),
+        )
     )
     msg_with_sender = result.scalar_one()
-    return _enrich_message(msg_with_sender)
+    payload = _enrich_message(msg_with_sender)
+    await _broadcast_socket(payload.model_dump(mode="json"), conversation_id)
+    return payload
+
+
+async def _compute_recipient_for_conversation(
+    conversation_id: uuid.UUID,
+    sender_id: uuid.UUID,
+    db: AsyncSession,
+) -> uuid.UUID | None:
+    """Destinataire d'une conversation directe : l'autre participant (ou None)."""
+    part_result = await db.execute(
+        select(ConversationParticipant).where(
+            ConversationParticipant.conversation_id == conversation_id
+        )
+    )
+    parts = [str(p.user_id) for p in part_result.scalars().all()]
+    others = [p for p in parts if p != str(sender_id)]
+    return uuid.UUID(others[0]) if others else None
+
+
+async def _validate_reply(
+    reply_to_message_id: str | None,
+    conversation_id: uuid.UUID,
+    db: AsyncSession,
+) -> uuid.UUID | None:
+    """Valide le message référencé (Reply-To) et renvoie son UUID, ou None."""
+    if not reply_to_message_id:
+        return None
+    try:
+        reply_uuid = uuid.UUID(str(reply_to_message_id))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Message référencé invalide")
+    ref_result = await db.execute(
+        select(Message).where(
+            Message.id == reply_uuid,
+            Message.conversation_id == conversation_id,
+        )
+    )
+    if ref_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Message référencé introuvable dans cette conversation",
+        )
+    return reply_uuid
 
 
 AUDIO_ALLOWED = {"audio/webm", "audio/mp3", "audio/mpeg", "audio/ogg", "audio/wav"}
@@ -700,6 +814,7 @@ async def send_media_message(
     conversation_id: uuid.UUID,
     file: UploadFile = File(...),
     contenu: Optional[str] = Form(None),
+    reply_to_message_id: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -711,6 +826,8 @@ async def send_media_message(
     Cloud Storage (Supabase) — ou sur le disque local en repli.
     """
     await _get_conversation_with_access(conversation_id, current_user, db)
+
+    reply_uuid = await _validate_reply(reply_to_message_id, conversation_id, db)
 
     content_type = (file.content_type or "").lower()
     if content_type.startswith("audio/"):
@@ -752,9 +869,13 @@ async def send_media_message(
         id=uuid.uuid4(),
         conversation_id=conversation_id,
         expediteur_id=current_user.id,
+        destinataire_id=await _compute_recipient_for_conversation(
+            conversation_id, current_user.id, db
+        ),
         contenu=contenu or "",
         type=message_type,
         media_url=media_url,
+        reply_to_message_id=reply_uuid,
     )
     db.add(msg)
 
@@ -776,10 +897,15 @@ async def send_media_message(
         extrait=extrait,
     )
     result = await db.execute(
-        select(Message).where(Message.id == msg.id).options(selectinload(Message.expediteur))
+        select(Message).where(Message.id == msg.id).options(
+            selectinload(Message.expediteur),
+            selectinload(Message.reply_to).selectinload(Message.expediteur),
+        )
     )
     msg_with_sender = result.scalar_one()
-    return _enrich_message(msg_with_sender)
+    payload = _enrich_message(msg_with_sender)
+    await _broadcast_socket(payload.model_dump(mode="json"), conversation_id)
+    return payload
 
 
 @router.post("/{conversation_id}/messages/audio", response_model=MessageOut, status_code=201)
@@ -787,6 +913,7 @@ async def send_audio_message(
     conversation_id: uuid.UUID,
     file: UploadFile = File(...),
     contenu: Optional[str] = Form(None),
+    reply_to_message_id: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -798,6 +925,7 @@ async def send_audio_message(
             detail=f"Format audio non supporté: {file.content_type}. Formats acceptés: webm, mp3, ogg, wav",
         )
 
+    reply_uuid = await _validate_reply(reply_to_message_id, conversation_id, db)
     ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "webm"
     content = await file.read()
     media_url = save_upload(content, "audios", ext)
@@ -806,9 +934,13 @@ async def send_audio_message(
         id=uuid.uuid4(),
         conversation_id=conversation_id,
         expediteur_id=current_user.id,
+        destinataire_id=await _compute_recipient_for_conversation(
+            conversation_id, current_user.id, db
+        ),
         contenu=contenu or "",
         type="audio",
         media_url=media_url,
+        reply_to_message_id=reply_uuid,
     )
     db.add(msg)
 
@@ -829,10 +961,15 @@ async def send_audio_message(
         audio=True,
     )
     result = await db.execute(
-        select(Message).where(Message.id == msg.id).options(selectinload(Message.expediteur))
+        select(Message).where(Message.id == msg.id).options(
+            selectinload(Message.expediteur),
+            selectinload(Message.reply_to).selectinload(Message.expediteur),
+        )
     )
     msg_with_sender = result.scalar_one()
-    return _enrich_message(msg_with_sender)
+    payload = _enrich_message(msg_with_sender)
+    await _broadcast_socket(payload.model_dump(mode="json"), conversation_id)
+    return payload
 
 
 @router.put("/{conversation_id}/lire")
@@ -868,6 +1005,23 @@ async def mark_conversation_read(
         .values(lu=True)
     )
     await db.flush()
+
+    # Temps réel : informe l'expéditeur que ses messages sont lus.
+    from app.socket_chat import sio
+
+    try:
+        await sio.emit(
+            "read_status",
+            {
+                "conversation_id": str(conversation_id),
+                "reader_id": str(current_user.id),
+            },
+            room=str(conversation_id),
+            skip_sid=None,
+        )
+    except Exception:
+        pass
+
     return {
         "message": "Messages marqués comme lus",
         "marked": len(messages),

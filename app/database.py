@@ -55,6 +55,8 @@ async def init_db():
         from sqlalchemy import text
         for stmt in [
             "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)",
+            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS destinataire_id UUID REFERENCES users(id) ON DELETE SET NULL",
+            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_message_id UUID REFERENCES messages(id) ON DELETE SET NULL",
             "ALTER TYPE etat_camion ADD VALUE IF NOT EXISTS 'bon_etat'",
             "ALTER TYPE statut_assistance ADD VALUE IF NOT EXISTS 'pris_en_charge'",
             "ALTER TABLE profils_mecanicien ADD COLUMN IF NOT EXISTS proof_document_url VARCHAR(500)",

@@ -183,3 +183,15 @@ async def health_check():
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "TogoTruckConnect API"}
+
+
+# ─── Temps réel Socket.io (python-socketio) ─────────────────────────
+# `uvicorn app.main:app` sert désormais à la fois :
+#   - le REST/WebSockets FastAPI (toutes les routes existantes), et
+#   - la messagerie temps réel sous /socket.io/*.
+# (l'ASGIApp délègue le lifespan au FastAPI sous-jacent : seed admin/pays OK)
+import socketio as _socketio  # type: ignore
+
+from app.socket_chat import sio as _sio
+
+app = _socketio.ASGIApp(_sio, other_asgi_app=app)

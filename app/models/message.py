@@ -28,6 +28,13 @@ class Message(Base):
         index=True,
         nullable=False,
     )
+    # Destinataire du message (conversations directes) — null pour un groupe.
+    destinataire_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+        default=None,
+    )
     contenu: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[TypeMessage] = mapped_column(
         Enum(TypeMessage, name="type_message", create_constraint=True),
@@ -35,6 +42,13 @@ class Message(Base):
         default=TypeMessage.texte,
     )
     media_url: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    # Message d'origine auquel ce message répond (Reply-To, profondeur 1).
+    reply_to_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+        default=None,
+    )
     lu: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -44,4 +58,16 @@ class Message(Base):
     conversation: Mapped["Conversation"] = relationship(
         "Conversation", back_populates="messages"
     )
-    expediteur: Mapped["User"] = relationship("User", back_populates="messages_envoyes")
+    expediteur: Mapped["User"] = relationship(
+        "User",
+        back_populates="messages_envoyes",
+        foreign_keys=[expediteur_id],
+    )
+    # Message cité par ce message (Reply-To). Le FK pointe vers messages.id ;
+    # remote_side est nécessaire pour la relation auto-référencée.
+    reply_to: Mapped["Message | None"] = relationship(
+        "Message",
+        remote_side="Message.id",
+        foreign_keys=[reply_to_message_id],
+        lazy="selectin",
+    )
