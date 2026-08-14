@@ -236,3 +236,168 @@ async def mes_candidatures(
         }
         for c in candidatures
     ]
+
+
+async def _offre_belongs_to_user(offre: OffreRecrutement, user: User, db: AsyncSession) -> bool:
+    """L'utilisateur est-il le propriétaire de l'offre (via son profil) ?"""
+    profil = await db.execute(
+        select(ProfilProprietaire).where(ProfilProprietaire.id == offre.proprietaire_id)
+    )
+    p = profil.scalar_one_or_none()
+    return bool(p and str(p.user_id) == str(user.id))
+
+
+@router.get("/{offre_id}/candidatures")
+async def list_offre_candidatures(
+    offre_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Liste les candidatures reçues pour une offre. Réservé au propriétaire de
+    l'offre (ou à un administrateur).
+    """
+    if current_user.role.value not in ("proprietaire", "admin"):
+        raise HTTPException(status_code=403, detail="Accès réservé au propriétaire de l'offre")
+
+    result = await db.execute(
+        select(OffreRecrutement).where(OffreRecrutement.id == offre_id)
+    )
+    offre = result.scalar_one_or_none()
+    if not offre:
+        raise HTTPException(status_code=404, detail="Offre non trouvée")
+
+    if not await _offre_belongs_to_user(offre, current_user, db):
+        raise HTTPException(status_code=403, detail="Vous n'êtes pas le propriétaire de cette offre")
+
+    candidatures_result = await db.execute(
+        select(Candidature, User)
+        .join(User, User.id == Candidature.chauffeur_id)
+        .where(Candidature.offre_id == str(offre_id))
+        .order_by(Candidature.created_at.desc())
+    )
+    return [
+        {
+            "id": str(c.id),
+            "offre_id": str(offre_id),
+            "chauffeur_id": str(chauffeur.id),
+            "chauffeur_nom": chauffeur.nom_complet,
+            "chauffeur_photo": chauffeur.photo_profil,
+            "message": c.message,
+            "statut": c.statut,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        }
+        for c, chauffeur in candidatures_result.all()
+    ]
+
+
+@router.put("/{offre_id}/candidatures/{candidature_id}")
+async def decide_candidature(
+    offre_id: uuid.UUID,
+    candidature_id: uuid.UUID,
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Répond à une candidature : `acceptee` (le chauffeur est retenu et l'offre
+    est pourvue) ou `refusee`. Réservé au propriétaire de l'offre.
+    Le chauffeur est notifié avec un lien vers la conversation privée.
+    """
+    statut = (body.get("statut") or "").strip().lower()
+    if statut not in ("acceptee", "refusee"):
+        raise HTTPException(
+            status_code=422, detail="Statut invalide (attendu : acceptee ou refusee)"
+        )
+
+    offre_result = await db.execute(
+        select(OffreRecrutement).where(OffreRecrutement.id == offre_id)
+    )
+    offre = offre_result.scalar_one_or_none()
+    if not offre:
+        raise HTTPException(status_code=404, detail="Offre non trouvée")
+    if not await _offre_belongs_to_user(offre, current_user, db):
+        raise HTTPException(status_code=403, detail="Vous n'êtes pas le propriétaire de cette offre")
+
+    cand_result = await db.execute(
+        select(Candidature, User)
+        .join(User, User.id == Candidature.chauffeur_id)
+        .where(
+            Candidature.id == str(candidature_id),
+            Candidature.offre_id == str(offre_id),
+        )
+    )
+    row = cand_result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Candidature non trouvée")
+    candidature, chauffeur = row
+
+    if candidature.statut != "en_attente":
+        raise HTTPException(
+            status_code=400, detail="Cette candidature a déjà été traitée"
+        )
+
+    candidature.statut = statut
+    candidature.updated_at = datetime.now(timezone.utc)
+
+    from app.routers.conversations import get_or_create_direct_conversation
+    from app.models.message import Message
+
+    conv = await get_or_create_direct_conversation(db, current_user.id, chauffeur.id)
+
+    if statut == "acceptee":
+        # L'offre est pourvue ; les autres candidatures sont refusées.
+        offre.statut = "pourvue"
+        autres = await db.execute(
+            select(Candidature).where(
+                Candidature.offre_id == str(offre_id),
+                Candidature.id != str(candidature_id),
+                Candidature.statut == "en_attente",
+            )
+        )
+        for autre in autres.scalars().all():
+            autre.statut = "refusee"
+            autre.updated_at = datetime.now(timezone.utc)
+        reponse = (
+            f"Félicitations {chauffeur.nom_complet} ! Votre candidature à "
+            f"« {offre.titre} » a été acceptée. Bienvenue à bord !"
+        )
+        titre = "Votre candidature a été acceptée"
+    else:
+        reponse = (
+            f"Bonjour {chauffeur.nom_complet}, nous vous remercions d'avoir "
+            f"postulé à « {offre.titre} », mais votre candidature n'a pas été retenue."
+        )
+        titre = "Réponse à votre candidature"
+
+    db.add(
+        Message(
+            id=uuid.uuid4(),
+            conversation_id=conv.id,
+            expediteur_id=current_user.id,
+            contenu=reponse,
+            type="texte",
+        )
+    )
+    conv.updated_at = datetime.now(timezone.utc)
+
+    await notify_user(
+        db,
+        user_id=chauffeur.id,
+        titre=titre,
+        contenu=reponse,
+        type_notif="admin",
+        lien=f"/dashboard/chat?conv={conv.id}",
+        metadata={"conversation_id": str(conv.id), "offre_id": str(offre_id), "statut": statut},
+        email=True,
+        push=True,
+    )
+
+    await db.flush()
+    return {
+        "message": "Réponse envoyée au chauffeur",
+        "statut": statut,
+        "conversation_id": str(conv.id),
+        "offre_pourvue": statut == "acceptee",
+    }

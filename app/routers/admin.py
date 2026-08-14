@@ -123,42 +123,15 @@ async def get_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Retourne les statistiques globales pour le dashboard admin.
-    Protégé : uniquement les administrateurs.
+    Statistiques globales du dashboard admin : utilisateurs actifs, offres
+    publiées, interventions réalisées, documents en attente de vérification,
+    candidatures et évolution mensuelle. Les conversations privées ne sont
+    jamais exposées (seuls des compteurs agrégés le sont).
+    Réservé aux administrateurs.
     """
-    total_users = (await db.execute(select(func.count()).select_from(User))).scalar() or 0
-    total_chauffeurs = (
-        await db.execute(
-            select(func.count()).select_from(User).where(User.role == "chauffeur")
-        )
-    ).scalar() or 0
-    total_proprietaires = (
-        await db.execute(
-            select(func.count()).select_from(User).where(User.role == "proprietaire")
-        )
-    ).scalar() or 0
-    total_mecaniciens = (
-        await db.execute(
-            select(func.count()).select_from(User).where(User.role == "mecanicien")
-        )
-    ).scalar() or 0
-    total_admins = (
-        await db.execute(
-            select(func.count()).select_from(User).where(User.role == "admin")
-        )
-    ).scalar() or 0
-    total_camions = (
-        await db.execute(select(func.count()).select_from(Camion))
-    ).scalar() or 0
+    from app.services.stats import admin_stats
 
-    return {
-        "total_utilisateurs": total_users,
-        "chauffeurs": total_chauffeurs,
-        "proprietaires": total_proprietaires,
-        "mecaniciens": total_mecaniciens,
-        "admins": total_admins,
-        "camions": total_camions,
-    }
+    return await admin_stats(db)
 
 
 # ─── Assistance mécanique (supervision admin) ─────

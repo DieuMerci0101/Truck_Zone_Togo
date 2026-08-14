@@ -95,13 +95,29 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
     """
     Endpoint WebSocket pour le chat temps réel.
 
-    Client se connecte avec : ws://localhost:8000/ws/chat/{conversation_id}?token=xxx
+    Client se connecte avec : ws://localhost:8000/ws/chat/{conversation_id}?user_id=xxx
     """
+    # Authentification simplifiée (en prod : vérifier le JWT).
+    user_id = websocket.query_params.get("user_id", "")
+
+    # Sécurité / vie privée : on n'autorise que les participants de la
+    # conversation (y compris pour un admin, qui n'est jamais participant).
+    try:
+        async with async_session() as db:
+            part = await db.execute(
+                select(ConversationParticipant).where(
+                    ConversationParticipant.conversation_id == conversation_id,
+                    ConversationParticipant.user_id == user_id,
+                )
+            )
+            if not part.scalar_one_or_none():
+                await websocket.close(code=4403, reason="Non autorisé sur cette conversation")
+                return
+    except Exception:
+        await websocket.close(code=4403, reason="Non autorisé sur cette conversation")
+        return
+
     await websocket.accept()
-
-    # Authentification simplifiée (en prod : vérifier le JWT)
-    user_id = websocket.query_params.get("user_id", str(uuid.uuid4()))
-
     await manager.connect(websocket, conversation_id, user_id)
 
     try:
