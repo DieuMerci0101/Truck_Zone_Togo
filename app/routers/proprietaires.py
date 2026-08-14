@@ -18,6 +18,7 @@ from app.models.assistance import DemandeAssistance
 from app.models.conversation import Conversation, ConversationParticipant
 from app.models.document import Document
 from app.models.enums import TypeDocument
+from app.services.storage import delete_upload, save_upload
 from app.routers.auth import get_current_user, require_verified
 from app.schemas.proprietaire import (
     CamionCreate,
@@ -406,17 +407,13 @@ async def upload_camion_photo(
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="Le fichier ne doit pas dépasser 5 Mo")
 
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    with open(filepath, "wb") as f:
-        f.write(content)
+    photo_url = save_upload(content, "camions", ext)
 
     is_first = count == 0
     photo = CamionPhoto(
         id=uuid.uuid4(),
         camion_id=camion.id,
-        photo_url=f"/uploads/camions/{filename}",
+        photo_url=photo_url,
         est_principale=is_first,
     )
     db.add(photo)
@@ -446,10 +443,7 @@ async def delete_camion_photo(
     if not photo:
         raise HTTPException(status_code=404, detail="Photo non trouvée")
 
-    if photo.photo_url and photo.photo_url.startswith("/uploads/"):
-        file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), photo.photo_url.lstrip("/"))
-        if os.path.exists(file_path):
-            os.remove(file_path)
+    delete_upload(photo.photo_url)
 
     was_main = photo.est_principale
     await db.delete(photo)
@@ -932,11 +926,7 @@ async def upload_document(
     if len(content) > MAX_DOC_SIZE:
         raise HTTPException(status_code=400, detail="Le fichier est trop lourd. La taille maximale autorisée est de 10 Mo.")
 
-    os.makedirs(UPLOAD_DIR_DOCS, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    filepath = os.path.join(UPLOAD_DIR_DOCS, filename)
-    with open(filepath, "wb") as f:
-        f.write(content)
+    fichier_url = save_upload(content, "documents", ext)
 
     type_doc_enum = None
     for td in TypeDocument:
@@ -950,7 +940,7 @@ async def upload_document(
         id=uuid.uuid4(),
         utilisateur_id=current_user.id,
         type_document=type_doc_enum,
-        fichier_url=f"/uploads/documents/{filename}",
+        fichier_url=fichier_url,
         statut="en_attente",
     )
     db.add(doc)

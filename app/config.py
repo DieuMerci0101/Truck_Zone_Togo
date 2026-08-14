@@ -101,6 +101,32 @@ class Settings(BaseSettings):
     minio_bucket: str = "togotruck-uploads"
 
     # ==========================
+    # Supabase Storage (recommandé pour Render gratuit)
+    # Si `supabase_url` + `supabase_service_role_key` sont définis, les uploads
+    # partent sur le bucket public Supabase (URLs publiques permanentes) au lieu
+    # du disque local (effacé à chaque redémarrage de l'instance Render).
+    #   1. https://supabase.com → New project (gratuit)
+    #   2. Storage → New bucket public (ex. « truckzone »)
+    #   3. Project Settings → API → copier « Project URL » et « service_role »
+    # ==========================
+    supabase_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("supabase_url", "SUPABASE_URL"),
+    )
+    supabase_service_role_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "supabase_service_role_key",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "SUPABASE_KEY",
+        ),
+    )
+    supabase_bucket: str = Field(
+        default="truckzone",
+        validation_alias=AliasChoices("supabase_bucket", "SUPABASE_BUCKET"),
+    )
+
+    # ==========================
     # Redis
     # ==========================
     redis_url: str = "redis://localhost:6379/0"

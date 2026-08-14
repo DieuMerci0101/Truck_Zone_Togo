@@ -15,6 +15,7 @@ from app.models.user import User
 from app.models.mecanicien import ProfilMecanicien
 from app.models.assistance import DemandeAssistance
 from app.routers.auth import get_current_user
+from app.services.storage import save_upload
 from app.schemas.mecanicien import (
     AssistanceCreate,
     AssistanceOut,
@@ -364,13 +365,7 @@ async def upload_proof(
     if len(content) > PROOF_MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="Le fichier est trop lourd. La taille maximale autorisée est de 10 Mo.")
 
-    os.makedirs(PROOF_UPLOAD_DIR, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    filepath = os.path.join(PROOF_UPLOAD_DIR, filename)
-    with open(filepath, "wb") as f:
-        f.write(content)
-
-    profil.proof_document_url = f"/uploads/justificatifs/{filename}"
+    profil.proof_document_url = save_upload(content, "justificatifs", ext)
     profil.verification_status = "pending_approval"
     # Synchronise aussi le statut global du compte
     from app.utils.verification import set_verification_status, PENDING_APPROVAL

@@ -238,11 +238,7 @@ async def upload_document(
     if len(content) > DOCUMENT_MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="Le fichier est trop lourd. La taille maximale autorisée est de 10 Mo.")
 
-    os.makedirs(DOCUMENT_UPLOAD_DIR, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}{ext}"
-    filepath = os.path.join(DOCUMENT_UPLOAD_DIR, filename)
-    with open(filepath, "wb") as f:
-        f.write(content)
+    fichier_url = save_upload(content, "documents", ext)
 
     type_doc_enum = None
     for td in TypeDocument:
@@ -256,7 +252,7 @@ async def upload_document(
         id=uuid.uuid4(),
         utilisateur_id=current_user.id,
         type_document=type_doc_enum,
-        fichier_url=f"/uploads/documents/{filename}",
+        fichier_url=fichier_url,
         statut="en_attente",
     )
     db.add(doc)

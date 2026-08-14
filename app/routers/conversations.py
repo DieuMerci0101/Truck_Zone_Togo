@@ -12,6 +12,7 @@ from app.models.user import User
 from app.models.conversation import Conversation, ConversationParticipant
 from app.models.message import Message
 from app.routers.auth import get_current_user
+from app.services.storage import save_upload
 from app.schemas.conversation import (
     ConversationCreate,
     ConversationOut,
@@ -626,20 +627,9 @@ async def send_audio_message(
             detail=f"Format audio non supporté: {file.content_type}. Formats acceptés: webm, mp3, ogg, wav",
         )
 
-    # Ensure upload directory exists
-    import os
-    upload_dir = "uploads/audios"
-    os.makedirs(upload_dir, exist_ok=True)
-
     ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "webm"
-    filename = f"{uuid.uuid4()}.{ext}"
-    filepath = f"{upload_dir}/{filename}"
-
     content = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(content)
-
-    media_url = f"/uploads/audios/{filename}"
+    media_url = save_upload(content, "audios", ext)
 
     msg = Message(
         id=uuid.uuid4(),
