@@ -115,9 +115,13 @@ async def list_chauffeurs(
     experience_min: int | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    # JOIN explicite avec users : sans lui, le filtre `User.is_active` générait
+    # un PRODUIT CARTÉSIEN (chaque chauffeur apparaissait une fois par
+    # utilisateur actif) — cause des doublons dans l'annuaire propriétaire.
     query = (
         select(ProfilChauffeur)
         .options(selectinload(ProfilChauffeur.user))
+        .join(User, User.id == ProfilChauffeur.user_id)
         .where(User.is_active == True)
         .where(ProfilChauffeur.numero_permis != PROFIL_INCOMPLET_MARQUEUR)
     )
@@ -136,7 +140,19 @@ async def list_chauffeurs(
         query = query.where(ProfilChauffeur.annees_experience >= experience_min)
     query = query.order_by(ProfilChauffeur.created_at.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
-    return result.scalars().all()
+    profils = result.scalars().all()
+
+    # Dédoublonnage de sécurité : un chauffeur apparaît STRICTEMENT une fois,
+    # quelle que soit la pagination ou l'historique de la base de données.
+    vus: set[str] = set()
+    uniques = []
+    for p in profils:
+        key = str(p.user_id)
+        if key in vus:
+            continue
+        vus.add(key)
+        uniques.append(p)
+    return uniques
 
 
 @router.get("/me", response_model=ProfilChauffeurOut)

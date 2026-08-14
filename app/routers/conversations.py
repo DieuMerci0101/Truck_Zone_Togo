@@ -442,6 +442,15 @@ async def create_conversation(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Prise de contact (ex : propriétaire → chauffeur depuis l'annuaire).
+    Idempotent : ne crée JAMAIS de doublon.
+      - Aucune conversation existante → création + message d'accueil automatique
+        (ou `premier_message` s'il est fourni), puis redirection.
+      - Conversation existante → retourne la discussion existante sans la
+        recréer ; si `premier_message` est fourni, il est ajouté dans la
+        discussion, sinon le chat est simplement ouvert.
+    """
     target_result = await db.execute(
         select(User).where(User.id == data.participant_id)
     )
@@ -451,62 +460,67 @@ async def create_conversation(
     if target.id == current_user.id:
         raise HTTPException(status_code=400, detail="Impossible de créer une conversation avec soi-même")
 
-    existing_parts = await db.execute(
-        select(ConversationParticipant).where(
-            ConversationParticipant.user_id == current_user.id
-        )
+    now = datetime.now(timezone.utc)
+
+    # 1) Conversation déjà existante → on ne recrée rien.
+    existing_conv_id = await _existing_conversation_id(
+        current_user.id, data.participant_id, db
     )
-    my_conv_ids = [p.conversation_id for p in existing_parts.scalars().all()]
-
-    if my_conv_ids:
-        other_parts = await db.execute(
-            select(ConversationParticipant).where(
-                ConversationParticipant.conversation_id.in_(my_conv_ids),
-                ConversationParticipant.user_id == data.participant_id,
-            )
+    if existing_conv_id:
+        conv_result = await db.execute(
+            select(Conversation).where(Conversation.id == existing_conv_id)
         )
-        existing = other_parts.scalar_one_or_none()
-        if existing:
-            # If premier_message is provided, send it in the existing conversation
-            if data.premier_message:
-                msg = Message(
-                    id=uuid.uuid4(),
-                    conversation_id=existing.conversation_id,
-                    expediteur_id=current_user.id,
-                    contenu=data.premier_message,
-                    type="texte",
-                )
-                db.add(msg)
-                now = datetime.now(timezone.utc)
-                conv_update = await db.execute(
-                    select(Conversation).where(Conversation.id == existing.conversation_id)
-                )
-                existing_conv = conv_update.scalar_one()
-                existing_conv.updated_at = now
-                await _notifier_autres_participants(
-                    existing_conv.id,
-                    current_user.id,
-                    current_user.nom_complet,
-                    data.premier_message,
-                    db,
-                )
-                await db.commit()
-                await db.refresh(existing_conv)
-                participants = await _fetch_participants(existing_conv.id, db)
-                return ConversationOut(
-                    id=existing_conv.id,
-                    type=existing_conv.type.value if hasattr(existing_conv.type, "value") else existing_conv.type,
-                    created_at=existing_conv.created_at,
-                    updated_at=existing_conv.updated_at,
-                    last_message=data.premier_message,
-                    last_message_at=now,
-                    participants=participants,
-                )
-            raise HTTPException(
-                status_code=409,
-                detail=f"Conversation déjà existante: {existing.conversation_id}",
+        conv = conv_result.scalar_one()
+        participants = await _fetch_participants(conv.id, db)
+
+        if data.premier_message:
+            msg = Message(
+                id=uuid.uuid4(),
+                conversation_id=conv.id,
+                expediteur_id=current_user.id,
+                contenu=data.premier_message,
+                type="texte",
+            )
+            db.add(msg)
+            conv.updated_at = now
+            await _notifier_autres_participants(
+                conv.id,
+                current_user.id,
+                current_user.nom_complet,
+                data.premier_message,
+                db,
+            )
+            await db.commit()
+            await db.refresh(conv)
+            return ConversationOut(
+                id=conv.id,
+                type=conv.type.value if hasattr(conv.type, "value") else conv.type,
+                created_at=conv.created_at,
+                updated_at=conv.updated_at,
+                last_message=data.premier_message,
+                last_message_at=now,
+                participants=participants,
             )
 
+        # Ouverture directe de la discussion existante (dernier message inclus).
+        last_msg_result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conv.id)
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        last_msg = last_msg_result.scalar_one_or_none()
+        return ConversationOut(
+            id=conv.id,
+            type=conv.type.value if hasattr(conv.type, "value") else conv.type,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+            last_message=_message_preview(last_msg),
+            last_message_at=last_msg.created_at if last_msg else None,
+            participants=participants,
+        )
+
+    # 2) Aucune conversation → création + message d'accueil automatique.
     conv = Conversation(
         id=uuid.uuid4(),
         type="directe",
@@ -514,31 +528,29 @@ async def create_conversation(
     db.add(conv)
     await db.flush()
 
-    p1 = ConversationParticipant(conversation_id=conv.id, user_id=current_user.id)
-    db.add(p1)
+    db.add(ConversationParticipant(conversation_id=conv.id, user_id=current_user.id))
     await db.flush()
-    p2 = ConversationParticipant(conversation_id=conv.id, user_id=data.participant_id)
-    db.add(p2)
+    db.add(ConversationParticipant(conversation_id=conv.id, user_id=data.participant_id))
     await db.flush()
 
-    # Send first message if provided
-    if data.premier_message:
-        msg = Message(
-            id=uuid.uuid4(),
-            conversation_id=conv.id,
-            expediteur_id=current_user.id,
-            contenu=data.premier_message,
-            type="texte",
-        )
-        db.add(msg)
-        conv.updated_at = datetime.now(timezone.utc)
-        await _notifier_autres_participants(
-            conv.id,
-            current_user.id,
-            current_user.nom_complet,
-            data.premier_message,
-            db,
-        )
+    contenu = data.premier_message or _message_contact_automatique(target.nom_complet)
+
+    msg = Message(
+        id=uuid.uuid4(),
+        conversation_id=conv.id,
+        expediteur_id=current_user.id,
+        contenu=contenu,
+        type="texte",
+    )
+    db.add(msg)
+    conv.updated_at = now
+    await _notifier_autres_participants(
+        conv.id,
+        current_user.id,
+        current_user.nom_complet,
+        contenu,
+        db,
+    )
 
     await db.commit()
     await db.refresh(conv)
@@ -550,10 +562,15 @@ async def create_conversation(
         type=conv.type.value if hasattr(conv.type, "value") else conv.type,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
-        last_message=data.premier_message,
-        last_message_at=conv.updated_at if data.premier_message else None,
+        last_message=contenu,
+        last_message_at=now,
         participants=participants,
     )
+
+
+def _message_contact_automatique(target_nom: str) -> str:
+    """Message d'accueil envoyé automatiquement lors d'un premier contact."""
+    return f"Bonjour {target_nom}, je vous contacte via TogoTruck Connect."
 
 
 @router.get("/{conversation_id}", response_model=ConversationOut)
