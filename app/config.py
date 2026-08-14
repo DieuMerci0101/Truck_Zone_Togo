@@ -132,6 +132,34 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # ==========================
+    # Web Push (VAPID — PWA)
+    # Générer les clés : `python -m py_vapid create` (ou pywebpush CLI).
+    # VAPID_PUBLIC_KEY est exposé au frontend (nécessaire pour s'abonner).
+    # ==========================
+    vapid_public_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("vapid_public_key", "VAPID_PUBLIC_KEY"),
+    )
+    vapid_private_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("vapid_private_key", "VAPID_PRIVATE_KEY"),
+    )
+    vapid_subject: str = Field(
+        default="mailto:patgodson01@gmail.com",
+        validation_alias=AliasChoices("vapid_subject", "VAPID_SUBJECT"),
+    )
+
+    # ==========================
+    # SMS (secours urgence) — via l'API Brevo
+    # Nécessite des crédits SMS Brevo (Settings > SMS). Si non configuré,
+    # les SMS sont simplement ignorés (log) — le flux ne casse pas.
+    # ==========================
+    sms_sender: str = Field(
+        default="TruckZone",
+        validation_alias=AliasChoices("sms_sender", "SMS_SENDER"),
+    )
+
+    # ==========================
     # API
     # ==========================
     next_public_api_url: str = "https://truck-zone-togo.onrender.com"

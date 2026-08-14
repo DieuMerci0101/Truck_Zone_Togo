@@ -39,6 +39,7 @@ from app.models.otp import OTPReset
 from app.models.assistance import DemandeAssistance
 from app.models.candidature import Candidature
 from app.models.notification import Notification
+from app.models.notification_preferences import NotificationPreference, PushSubscription
 from app.models.photo_profil import PhotoProfil
 from app.models.audit_log import AuditLog
 
@@ -63,6 +64,8 @@ __all__ = [
     "DemandeAssistance",
     "Candidature",
     "Notification",
+    "NotificationPreference",
+    "PushSubscription",
     "PhotoProfil",
     "AuditLog",
     # Enums

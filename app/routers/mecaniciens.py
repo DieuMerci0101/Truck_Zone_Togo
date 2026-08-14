@@ -453,6 +453,8 @@ async def create_assistance(
         type_notif="assistance",
         lien="/admin/dashboard/assistance",
     )
+    urgence_valeur = data.urgence.value if hasattr(data.urgence, "value") else str(data.urgence)
+    est_urgent = urgence_valeur.lower() in ("haute", "critique")
     await notify_user(
         db,
         user_id=current_user.id,
@@ -460,6 +462,10 @@ async def create_assistance(
         contenu=f"Votre demande d'assistance de type « {data.type_panne} » a été transmise aux administrateurs et mécaniciens disponibles.",
         type_notif="assistance",
         lien="/dashboard/chauffeur/assistance",
+        metadata={"demande_id": str(assistance.id), "urgence": urgence_valeur},
+        push=True,
+        sms=True,
+        urgent=est_urgent,
     )
 
     return _assistance_out(assistance)

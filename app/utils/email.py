@@ -670,3 +670,63 @@ def send_welcome_email(to_email: str, user_name: str) -> bool:
     """
 
     return _send_email(to_email, subject, html_body, plain_body)
+
+
+def send_simple_notification_email(
+    to_email: str, subject: str, body: str, lien: str | None = None
+) -> bool:
+    """
+    Email court de notification (module 2 : notifications multi-canal).
+    `body` = texte brut du message ; un lien optionnel est ajouté en pied.
+    """
+    settings = get_settings()
+
+    if not _mail_is_configured(settings):
+        logger.warning(
+            "[EMAIL] Aucun canal configuré. Notification email ignorée pour %s", to_email
+        )
+        return False
+
+    login_url = f"{settings.frontend_url.rstrip('/')}/login"
+    action_url = lien or login_url
+
+    html_body = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body {{ font-family: Arial, sans-serif; background-color: #f4f7fa; margin: 0; padding: 20px; }}
+            .container {{ max-width: 500px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }}
+            .header {{ background: linear-gradient(135deg, #1d4ed8, #1e3a8a); padding: 24px; text-align: center; }}
+            .header h1 {{ color: white; margin: 0; font-size: 18px; }}
+            .body {{ padding: 30px; }}
+            .body p {{ font-size: 14px; color: #374151; line-height: 1.6; }}
+            .btn {{ display:inline-block; background:#E59E00; color:#fff; text-decoration:none; padding:12px 28px; border-radius:8px; font-size:14px; font-weight:600; }}
+            .footer {{ background: #f9fafb; padding: 20px; text-align: center; border-top: 1px solid #e5e7eb; }}
+            .footer p {{ font-size: 11px; color: #9ca3af; margin: 0; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🚛 Togo Truck Connect</h1>
+            </div>
+            <div class="body">
+                <p>{subject}</p>
+                <p>{body}</p>
+                <p style="text-align:center; margin: 24px 0;">
+                    <a href="{action_url}" class="btn">Ouvrir</a>
+                </p>
+            </div>
+            <div class="footer">
+                <p>© 2026 Togo Truck Connect - Plateforme du transport routier au Togo</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    plain_body = f"{subject}\n\n{body}\n\n{action_url}"
+
+    return _send_email(to_email, subject, html_body, plain_body)

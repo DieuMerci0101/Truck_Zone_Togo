@@ -485,6 +485,9 @@ async def _apply_document_status(
             contenu=f"Votre document de type « {doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document} » a été validé par un administrateur.",
             type_notif="document",
             lien=lien_documents,
+            metadata={"document_id": str(doc.id)},
+            email=True,
+            push=True,
         )
         user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))
         user = user_result.scalar_one_or_none()
@@ -516,6 +519,8 @@ async def _apply_document_status(
             contenu=f"Votre document de type « {doc.type_document.value if hasattr(doc.type_document, 'value') else doc.type_document} » a été rejeté. Motif : {motif}",
             type_notif="document",
             lien=lien_documents,
+            metadata={"document_id": str(doc.id)},
+            push=True,
         )
         # Envoi email de rejet
         user_result = await db.execute(select(User).where(User.id == doc.utilisateur_id))

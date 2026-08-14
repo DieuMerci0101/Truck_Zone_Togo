@@ -23,6 +23,9 @@ class Notification(TimestampMixin, Base):
     )
     lu: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     lien: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Métadonnées JSON libres (ex: {"conversation_id": "...", "demande_id": "..."}).
+    # Chaîne JSON — compatible PostgreSQL sans extension JSONB.
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     destinataire: Mapped["User"] = relationship("User", back_populates="notifications")  # noqa: F821

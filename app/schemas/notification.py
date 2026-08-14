@@ -10,6 +10,7 @@ class NotificationCreate(BaseModel):
     contenu: str = Field(..., min_length=1)
     type: str = Field(default="systeme")
     lien: str | None = None
+    metadata: dict | None = None
 
 
 class NotificationOut(BaseModel):
@@ -20,6 +21,48 @@ class NotificationOut(BaseModel):
     type: str
     lu: bool
     lien: str | None
+    metadata: dict | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):
+        data = super().model_validate(obj, *args, **kwargs)
+        if getattr(obj, "metadata_json", None):
+            import json
+
+            try:
+                data.metadata = json.loads(obj.metadata_json)
+            except (json.JSONDecodeError, TypeError):
+                data.metadata = None
+        return data
+
+
+class NotificationPreferencesUpdate(BaseModel):
+    email: bool | None = None
+    push: bool | None = None
+    sms: bool | None = None
+    in_app: bool | None = None
+
+
+class NotificationPreferencesOut(BaseModel):
+    user_id: uuid.UUID
+    email: bool
+    push: bool
+    sms: bool
+    in_app: bool
+    updated_at: datetime | None = None
+
+
+class PushSubscriptionCreate(BaseModel):
+    endpoint: str = Field(..., min_length=10, max_length=1024)
+    p256dh: str = Field(..., min_length=5, max_length=512)
+    auth: str = Field(..., min_length=5, max_length=256)
+
+
+class PushSubscriptionOut(BaseModel):
+    id: uuid.UUID
+    endpoint: str
+    user_agent: str | None
+    created_at: datetime

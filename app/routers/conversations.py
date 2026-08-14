@@ -221,6 +221,9 @@ async def initiate_from_offer(
         contenu=f"{current_user.nom_complet} vous a contacté à propos de {reference}.",
         type_notif="message",
         lien=f"/dashboard/chat?conv={conv.id}",
+        metadata={"conversation_id": str(conv.id)},
+        email=True,
+        push=True,
     )
 
     await db.commit()
@@ -331,6 +334,9 @@ async def _notifier_autres_participants(
             contenu=f"{expediteur_nom} : {extrait}",
             type_notif="message",
             lien=f"/dashboard/chat?conv={conversation_id}",
+            metadata={"conversation_id": str(conversation_id), "audio": audio},
+            email=True,
+            push=True,
         )
 
 
