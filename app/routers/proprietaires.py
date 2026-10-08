@@ -854,7 +854,7 @@ async def create_assistance(
     await db.flush()
     await db.refresh(assistance)
 
-    from app.utils.notifications import notify_all_admins
+    from app.utils.notifications import notify_all_admins, notify_user
 
     await notify_all_admins(
         db,

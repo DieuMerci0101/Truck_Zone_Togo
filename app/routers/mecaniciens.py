@@ -905,8 +905,16 @@ async def accept_proposition(
             detail="Cette demande a déjà été attribuée à un mécanicien",
         )
 
+    # Accepte à la fois l'identifiant du mécanicien (profil) et celui de la
+    # proposition, pour rester compatible avec les deux formats de l'API.
     cible = next(
-        (p for p in assistance.propositions if str(p.id) == str(mecanicien_id)), None
+        (
+            p
+            for p in assistance.propositions
+            if str(p.mecanicien_id) == str(mecanicien_id)
+            or str(p.id) == str(mecanicien_id)
+        ),
+        None,
     )
     if cible is None:
         raise HTTPException(
@@ -922,7 +930,7 @@ async def accept_proposition(
     now = datetime.now(timezone.utc)
     rejetes: list[PropositionAssistance] = []
     for p in assistance.propositions:
-        if str(p.id) == str(mecanicien_id):
+        if p.id == cible.id:
             p.statut = StatutProposition.accepte
         else:
             if p.statut == StatutProposition.en_attente:
@@ -1066,7 +1074,13 @@ async def reject_proposition(
         )
 
     cible = next(
-        (p for p in assistance.propositions if str(p.id) == str(mecanicien_id)), None
+        (
+            p
+            for p in assistance.propositions
+            if str(p.mecanicien_id) == str(mecanicien_id)
+            or str(p.id) == str(mecanicien_id)
+        ),
+        None,
     )
     if cible is None:
         raise HTTPException(status_code=404, detail="Proposition non trouvée")
@@ -1188,10 +1202,14 @@ async def update_assistance_statut(
     elif not _is_demandeur(current_user, assistance):
         raise HTTPException(status_code=403, detail="Accès non autorisé")
 
-    # Une demande attribuée ne peut jamais revenir en arrière : cela
+    # Une demande déjà attribuée ne peut jamais revenir en arrière : cela
     # réouvrirait la sélection et casserait la règle « un seul mécanicien ».
-    if data.statut in (StatutAssistance.en_attente, StatutAssistance.pris_en_charge):
-        if assistance.statut == StatutAssistance.assignee:
+    if current_user.role != UserRole.admin:
+        if (
+            data.statut in (StatutAssistance.en_attente, StatutAssistance.pris_en_charge)
+            and assistance.statut
+            in (StatutAssistance.assignee, StatutAssistance.en_cours)
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Le mécanicien a déjà été sélectionné : retour en arrière impossible",
