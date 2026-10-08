@@ -132,6 +132,19 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # ==========================
+    # Assistance mécanique — rayon de recherche des mécaniciens proches.
+    # Surchargé par la variable d'environnement `MECHANIC_ASSISTANCE_RADIUS_KM`.
+    # Plafonne le rayon d'intervention de chaque mécanicien (en km).
+    # ==========================
+    mechanic_assistance_radius_km: float = Field(
+        default=150,
+        validation_alias=AliasChoices(
+            "mechanic_assistance_radius_km",
+            "MECHANIC_ASSISTANCE_RADIUS_KM",
+        ),
+    )
+
+    # ==========================
     # Web Push (VAPID — PWA)
     # Générer les clés : `python -m py_vapid create` (ou pywebpush CLI).
     # VAPID_PUBLIC_KEY est exposé au frontend (nécessaire pour s'abonner).

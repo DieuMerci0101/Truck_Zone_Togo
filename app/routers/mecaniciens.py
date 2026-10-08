@@ -6,14 +6,18 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.models.mecanicien import ProfilMecanicien
 from app.models.assistance import DemandeAssistance
+from app.models.proposition import PropositionAssistance
+from app.models.enums import DisponibiliteMecanicien, StatutAssistance, StatutProposition, UserRole
 from app.routers.auth import get_current_user
 from app.services.storage import save_upload
 from app.schemas.mecanicien import (
@@ -23,6 +27,7 @@ from app.schemas.mecanicien import (
     MecanicienPositionOut,
     ProfilMecanicienOut,
     ProfilMecanicienUpdate,
+    PropositionMecanicienOut,
 )
 
 router = APIRouter(prefix="/api/mecaniciens", tags=["Mécaniciens"])
@@ -67,19 +72,23 @@ async def _mecaniciens_proches(
     db: AsyncSession,
     lat: float,
     lng: float,
-    max_rayon_km: float = 150,
+    max_rayon_km: float | None = None,
 ) -> list[tuple[ProfilMecanicien, float]]:
     """
-    Retourne les mécaniciens ayant ACTIVÉ leur position temps réel, vérifiés,
-    triés par distance croissante, et dans la limite de leur rayon
-    d'intervention (borné par `max_rayon_km`).
+    Retourne les mécaniciens à proximité ÉLIGIBLES pour une nouvelle demande :
+    position temps réel activée, compte vérifié, NON indisponible, et situés
+    dans la limite de leur rayon d'intervention (plafonné par
+    `MECHANIC_ASSISTANCE_RADIUS_KM`). Triés par distance croissante.
     """
+    if max_rayon_km is None:
+        max_rayon_km = get_settings().mechanic_assistance_radius_km
     result = await db.execute(
         select(ProfilMecanicien)
         .options(selectinload(ProfilMecanicien.user))
         .where(
             ProfilMecanicien.position_active == True,  # noqa: E712
             ProfilMecanicien.verification_status == "approved",
+            ProfilMecanicien.disponibilite != DisponibiliteMecanicien.indisponible,
         )
     )
     proches: list[tuple[ProfilMecanicien, float]] = []
@@ -104,11 +113,120 @@ class MecanicienActivationRequest(BaseModel):
     localisation_lng: float | None = Field(None, ge=-180, le=180)
 
 
-def _assistance_out(a: DemandeAssistance, distance_km: float | None = None) -> AssistanceOut:
+def _assistance_out(
+    a: DemandeAssistance,
+    distance_km: float | None = None,
+    profil_mecanicien: ProfilMecanicien | None = None,
+) -> AssistanceOut:
+    """
+    Sérialise une demande d'assistance, y compris l'historique des propositions
+    de prise en charge. Si `profil_mecanicien` est fourni (mécanicien connecté),
+    `ma_proposition` pointe vers SA proposition.
+    """
     out = AssistanceOut.model_validate(a)
     if distance_km is not None:
         out.distance_km = distance_km
+
+    out.propositions = []
+    try:
+        out.propositions = [
+            PropositionMecanicienOut.model_validate(p)
+            for p in (list(a.propositions) if a.propositions is not None else [])
+        ]
+    except Exception:  # noqa: BLE001 — objet fraîchement créé, non chargé
+        out.propositions = []
+    out.nb_propositions_en_attente = sum(
+        1 for p in out.propositions if p.statut == StatutProposition.en_attente.value
+    )
+    if profil_mecanicien is not None:
+        for p in out.propositions:
+            if str(p.mecanicien_id) == str(profil_mecanicien.id):
+                out.ma_proposition = p
+                break
     return out
+
+
+async def notifier_mecaniciens_proches(
+    db: AsyncSession,
+    assistance: DemandeAssistance,
+    demandeur: User,
+) -> int:
+    """
+    Notifie TOUS les mécaniciens éligibles (proches + disponibles + vérifiés)
+    d'une nouvelle demande d'assistance : notification en base + Web Push,
+    puis rafraîchissement temps réel de la file d'attente (WebSocket).
+    Retourne le nombre de mécaniciens notifiés.
+    """
+    from app.assistance_events import broadcast_assistance_event
+    from app.utils.notifications import notify_user
+
+    lat, lng = _parse_wkt(assistance.localisation)
+    if (lat, lng) == (0.0, 0.0):
+        return 0
+
+    proches = await _mecaniciens_proches(db, lat, lng)
+    type_panne = (
+        assistance.type_panne.value
+        if hasattr(assistance.type_panne, "value")
+        else str(assistance.type_panne)
+    )
+    urgence = (
+        assistance.urgence.value
+        if hasattr(assistance.urgence, "value")
+        else str(assistance.urgence)
+    )
+    for mecanicien, dist in proches:
+        await notify_user(
+            db,
+            user_id=mecanicien.user_id,
+            titre="🔧 Nouvelle demande d'assistance mécanique",
+            contenu=(
+                "Nouvelle demande d'assistance mécanique disponible à proximité. "
+                f"{demandeur.nom_complet} demande « {type_panne} » (urgence « {urgence} ») "
+                f"à {dist:.0f} km de vous. Consultez la demande pour proposer votre intervention."
+            ),
+            type_notif="assistance",
+            lien="/dashboard/mecanicien/assistance",
+            metadata={
+                "demande_id": str(assistance.id),
+                "distance_km": dist,
+            },
+            push=True,
+        )
+    await broadcast_assistance_event(
+        {
+            "type": "assistance_new",
+            "demande_id": str(assistance.id),
+            "demandeur_id": str(assistance.demandeur_id),
+        }
+    )
+    return len(proches)
+
+
+async def _profil_mecanicien_of(
+    db: AsyncSession, user_id: uuid.UUID
+) -> ProfilMecanicien | None:
+    result = await db.execute(
+        select(ProfilMecanicien).where(ProfilMecanicien.user_id == user_id)
+    )
+    return result.scalar_one_or_none()
+
+
+def _is_demandeur(current_user: User, assistance: DemandeAssistance) -> bool:
+    """Seul le demandeur (chauffeur/propriétaire) peut choisir le mécanicien."""
+    if current_user.role in (UserRole.mecanicien, UserRole.admin):
+        return False
+    return str(assistance.demandeur_id) == str(current_user.id)
+
+
+def _load_propositions_options():
+    return (
+        selectinload(DemandeAssistance.propositions).selectinload(
+            PropositionAssistance.mecanicien
+        ).selectinload(ProfilMecanicien.user),
+        selectinload(DemandeAssistance.demandeur),
+        selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
+    )
 
 
 async def _get_or_create_profil(
@@ -448,10 +566,7 @@ async def list_my_assistance(
 ):
     result = await db.execute(
         select(DemandeAssistance)
-        .options(
-            selectinload(DemandeAssistance.demandeur),
-            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
-        )
+        .options(*_load_propositions_options())
         .where(DemandeAssistance.demandeur_id == current_user.id)
         .order_by(DemandeAssistance.created_at.desc())
     )
@@ -490,23 +605,8 @@ async def create_assistance(
     )
 
     # ── Module 3 : notifier les mécaniciens à proximité (position active,
-    #    vérifiés, dans leur rayon d'intervention) + push + rafraîchissement
-    #    temps réel de la file d'attente via WebSocket.
-    proches = await _mecaniciens_proches(db, data.localisation_lat, data.localisation_lng)
-    demandeur_nom = current_user.nom_complet
-    type_panne_valeur = data.type_panne.value if hasattr(data.type_panne, "value") else str(data.type_panne)
-    for mecanicien, dist in proches:
-        await notify_user(
-            db,
-            user_id=mecanicien.user_id,
-            titre="Nouvelle demande d'assistance à proximité",
-            contenu=f"{demandeur_nom} demande « {type_panne_valeur} » à {dist:.0f} km de vous.",
-            type_notif="assistance",
-            lien="/dashboard/mecanicien/assistance",
-            metadata={"demande_id": str(assistance.id), "distance_km": dist},
-            push=True,
-        )
-    await broadcast_assistance_event({"type": "assistance_new", "demande_id": str(assistance.id)})
+    #    vérifiés, disponibles, dans leur rayon d'intervention) + push.
+    await notifier_mecaniciens_proches(db, assistance, current_user)
 
     urgence_valeur = data.urgence.value if hasattr(data.urgence, "value") else str(data.urgence)
     est_urgent = urgence_valeur.lower() in ("haute", "critique")
@@ -543,15 +643,13 @@ async def list_available_assistance(
     """
     result = await db.execute(
         select(DemandeAssistance)
-        .options(
-            selectinload(DemandeAssistance.demandeur),
-            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
-        )
+        .options(*_load_propositions_options())
         .where(DemandeAssistance.statut != "terminee")
         .order_by(DemandeAssistance.created_at.desc())
     )
     demandes = result.scalars().all()
 
+    profil = await _profil_mecanicien_of(db, current_user.id)
     items: list[AssistanceOut] = []
     for d in demandes:
         dist = None
@@ -561,116 +659,453 @@ async def list_available_assistance(
                 dist = round(_haversine(lat, lng, d_lat, d_lng), 1)
                 if rayon_km and dist > rayon_km:
                     continue
-        items.append(_assistance_out(d, distance_km=dist))
+        items.append(_assistance_out(d, distance_km=dist, profil_mecanicien=profil))
 
     if lat is not None and lng is not None:
         items.sort(key=lambda x: (x.distance_km is None, x.distance_km or 0))
     return items
 
 
+def _lien_demande(assistance: DemandeAssistance) -> str:
+    """Lien de la demande selon le rôle du demandeur (chauffeur / propriétaire)."""
+    role = assistance.demandeur.role.value if assistance.demandeur else "chauffeur"
+    if role == "proprietaire":
+        return "/dashboard/proprietaire/assistance"
+    return "/dashboard/chauffeur/assistance"
+
+
+def _distance_demande_mecanicien(
+    assistance: DemandeAssistance, profil: ProfilMecanicien
+) -> float | None:
+    d_lat, d_lng = _parse_wkt(assistance.localisation)
+    p_lat, p_lng = _parse_wkt(profil.localisation)
+    if (d_lat, d_lng) == (0.0, 0.0) or (p_lat, p_lng) == (0.0, 0.0):
+        return None
+    return round(_haversine(d_lat, d_lng, p_lat, p_lng), 1)
+
+
 @router.put("/assistance/{assistance_id}/prendre")
-async def take_assistance(
+async def propose_assistance(
     assistance_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Le mécanicien prend en charge une demande — règle du « premier arrivé ».
+    Le mécanicien PROPOSE son assistance — il n'est PAS sélectionné.
 
-    Le passage `en_attente → pris_en_charge` est ATOMIQUE (UPDATE conditionnel
-    sur le statut) : si deux mécaniciens cliquent en même temps, un seul obtient
-    la demande ; l'autre reçoit 400 « déjà prise ». Impossible de « doubler ».
+    Il est simplement ajouté à la liste des mécaniciens intéressés, avec le
+    statut « en attente de validation du chauffeur ». Plusieurs mécaniciens
+    peuvent proposer la même demande ; seul le chauffeur (demandeur) choisit
+    ensuite celui qui interviendra.
+
+    La ligne de la demande est verrouillée (`FOR UPDATE`) pendant la lecture
+    du statut : une proposition ne peut pas être créée sur une demande qui
+    vient d'être attribuée (course possible avec la sélection du chauffeur).
     """
-    profil_result = await db.execute(
-        select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
-    )
-    profil = profil_result.scalar_one_or_none()
-    if not profil:
-        raise HTTPException(status_code=400, detail="Profil mécanicien introuvable")
-
-    now = datetime.now(timezone.utc)
-    result = await db.execute(
-        update(DemandeAssistance)
-        .where(
-            DemandeAssistance.id == assistance_id,
-            DemandeAssistance.statut == "en_attente",
+    if current_user.role != UserRole.mecanicien:
+        raise HTTPException(
+            status_code=403, detail="Seul un mécanicien peut proposer son assistance"
         )
-        .values(
-            mecanicien_id=profil.id,
-            statut="pris_en_charge",
-            pris_en_charge_at=now,
-        )
-    )
-    await db.flush()
 
-    if result.rowcount == 0:
+    profil = await _get_or_create_profil(current_user, db)
+
+    locked = await db.execute(
+        select(DemandeAssistance)
+        .options(*_load_propositions_options())
+        .where(DemandeAssistance.id == assistance_id)
+        .with_for_update()
+    )
+    assistance = locked.scalar_one_or_none()
+    if not assistance:
+        raise HTTPException(status_code=404, detail="Demande non trouvée")
+
+    if assistance.statut != StatutAssistance.en_attente:
         raise HTTPException(
             status_code=400,
-            detail="Demande déjà prise en charge par un autre mécanicien",
+            detail="Cette demande est déjà attribuée à un autre mécanicien",
         )
 
-    # Informe le demandeur en temps réel qu'un mécanicien arrive.
-    dem_result = await db.execute(
-        select(DemandeAssistance)
-        .options(
-            selectinload(DemandeAssistance.demandeur),
-            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
+    # Idempotence : une seule proposition par mécanicien et par demande.
+    existing_result = await db.execute(
+        select(PropositionAssistance).where(
+            PropositionAssistance.assistance_id == assistance_id,
+            PropositionAssistance.mecanicien_id == profil.id,
         )
-        .where(DemandeAssistance.id == assistance_id)
     )
-    assistance = dem_result.scalar_one()
-    assistance.mecanicien = profil
+    existing = existing_result.scalar_one_or_none()
+    if existing:
+        return {
+            "message": "Votre proposition est déjà enregistrée",
+            "statut": existing.statut.value,
+            "proposition": PropositionMecanicienOut.model_validate(existing),
+        }
+
+    proposition = PropositionAssistance(
+        id=uuid.uuid4(),
+        assistance_id=assistance.id,
+        mecanicien_id=profil.id,
+        distance_km=_distance_demande_mecanicien(assistance, profil),
+        statut=StatutProposition.en_attente,
+    )
+    db.add(proposition)
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Concurrence (double clic / requêtes simultanées) : retour idempotent.
+        await db.rollback()
+        again = await db.execute(
+            select(PropositionAssistance).where(
+                PropositionAssistance.assistance_id == assistance_id,
+                PropositionAssistance.mecanicien_id == profil.id,
+            )
+        )
+        row = again.scalar_one_or_none()
+        if row:
+            return {
+                "message": "Votre proposition est déjà enregistrée",
+                "statut": row.statut.value,
+                "proposition": PropositionMecanicienOut.model_validate(row),
+            }
+        raise HTTPException(
+            status_code=409, detail="Impossible d'enregistrer votre proposition"
+        )
+    await db.refresh(proposition)
 
     from app.assistance_events import broadcast_assistance_event
-    from app.routers.conversations import get_or_create_direct_conversation
-    from app.models.message import Message
     from app.utils.notifications import notify_user
 
+    # Le demandeur est informé qu'un mécanicien a proposé (Notification 2).
+    await notify_user(
+        db,
+        user_id=assistance.demandeur_id,
+        titre="Un mécanicien propose son assistance",
+        contenu=(
+            f"{current_user.nom_complet} propose son assistance pour votre demande "
+            f"d'assistance (« {assistance.type_panne} »). "
+            "Consultez la demande pour choisir le mécanicien qui interviendra."
+        ),
+        type_notif="assistance",
+        lien=_lien_demande(assistance),
+        metadata={
+            "demande_id": str(assistance.id),
+            "mecanicien_id": str(profil.id),
+            "proposition_id": str(proposition.id),
+        },
+        email=True,
+        push=True,
+    )
     await broadcast_assistance_event(
-        {"type": "assistance_taken", "demande_id": str(assistance_id)}
+        {
+            "type": "assistance_proposal",
+            "demande_id": str(assistance.id),
+            "demandeur_id": str(assistance.demandeur_id),
+        }
     )
 
-    # ── Ouverture automatique (Module 4) : conversation privée immédiate
-    #    entre le demandeur et le mécanicien pour coordonner l'arrivée.
+    return {
+        "message": "Proposition enregistrée — en attente de validation du chauffeur",
+        "statut": proposition.statut.value,
+        "proposition": PropositionMecanicienOut.model_validate(proposition),
+    }
+
+
+@router.get(
+    "/assistance/{assistance_id}/propositions",
+    response_model=list[PropositionMecanicienOut],
+)
+async def list_propositions(
+    assistance_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Liste des mécaniciens ayant proposé leur assistance.
+    - le demandeur (chauffeur/propriétaire) voit TOUS les mécaniciens intéressés ;
+    - un mécanicien ne voit que SA propre proposition ;
+    - les autres rôles sont refusés (403).
+    """
+    result = await db.execute(
+        select(DemandeAssistance)
+        .options(*_load_propositions_options())
+        .where(DemandeAssistance.id == assistance_id)
+    )
+    assistance = result.scalar_one_or_none()
+    if not assistance:
+        raise HTTPException(status_code=404, detail="Demande non trouvée")
+
+    if _is_demandeur(current_user, assistance):
+        propositions = list(assistance.propositions)
+    elif current_user.role == UserRole.mecanicien:
+        profil = await _profil_mecanicien_of(db, current_user.id)
+        if not profil:
+            raise HTTPException(status_code=400, detail="Profil mécanicien introuvable")
+        propositions = [
+            p
+            for p in assistance.propositions
+            if str(p.mecanicien_id) == str(profil.id)
+        ]
+    else:
+        raise HTTPException(status_code=403, detail="Accès non autorisé")
+
+    # Les propositions en attente d'abord, puis par distance croissante.
+    propositions.sort(
+        key=lambda p: (
+            p.statut != StatutProposition.en_attente,
+            p.distance_km if p.distance_km is not None else 99999,
+        )
+    )
+    return [PropositionMecanicienOut.model_validate(p) for p in propositions]
+
+
+async def _get_assistance_for_update(
+    db: AsyncSession, assistance_id: uuid.UUID
+) -> DemandeAssistance:
+    result = await db.execute(
+        select(DemandeAssistance)
+        .options(*_load_propositions_options())
+        .where(DemandeAssistance.id == assistance_id)
+        .with_for_update()
+    )
+    assistance = result.scalar_one_or_none()
+    if not assistance:
+        raise HTTPException(status_code=404, detail="Demande non trouvée")
+    return assistance
+
+
+@router.put("/assistance/{assistance_id}/propositions/{mecanicien_id}/accept")
+async def accept_proposition(
+    assistance_id: uuid.UUID,
+    mecanicien_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Le CHAUFFEUR (demandeur) sélectionne le mécanicien qui interviendra.
+
+    Sélection transactionnelle et exclusive :
+    - la ligne de la demande est verrouillée (`FOR UPDATE`) ;
+    - le statut doit toujours être `en_attente` (sinon 400) ;
+    - la proposition retenue passe à `accepte` ;
+    - TOUTES les autres propositions passent à `refuse` automatiquement ;
+    - la demande passe au statut existant `assignee` (mécanicien sélectionné).
+
+    Impossible de sélectionner deux mécaniciens pour la même demande.
+    """
+    assistance = await _get_assistance_for_update(db, assistance_id)
+
+    if not _is_demandeur(current_user, assistance):
+        raise HTTPException(
+            status_code=403,
+            detail="Seul le chauffeur ayant créé la demande peut sélectionner un mécanicien",
+        )
+
+    if assistance.statut != StatutAssistance.en_attente:
+        raise HTTPException(
+            status_code=400,
+            detail="Cette demande a déjà été attribuée à un mécanicien",
+        )
+
+    cible = next(
+        (p for p in assistance.propositions if str(p.id) == str(mecanicien_id)), None
+    )
+    if cible is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ce mécanicien n'a pas proposé son assistance pour cette demande",
+        )
+    if cible.statut != StatutProposition.en_attente:
+        raise HTTPException(
+            status_code=400,
+            detail="Cette proposition n'est plus en attente de validation",
+        )
+
+    now = datetime.now(timezone.utc)
+    rejetes: list[PropositionAssistance] = []
+    for p in assistance.propositions:
+        if str(p.id) == str(mecanicien_id):
+            p.statut = StatutProposition.accepte
+        else:
+            if p.statut == StatutProposition.en_attente:
+                rejetes.append(p)
+            p.statut = StatutProposition.refuse
+
+    profil = cible.mecanicien
+    assistance.mecanicien = profil
+    assistance.mecanicien_id = profil.id
+    assistance.statut = StatutAssistance.assignee
+    assistance.pris_en_charge_at = now
+    await db.flush()
+
+    from app.assistance_events import broadcast_assistance_event
+    from app.models.message import Message
+    from app.routers.conversations import get_or_create_direct_conversation
+    from app.utils.notifications import notify_user
+
+    # ── Conversation privée + premier message du chauffeur ──
     conv = await get_or_create_direct_conversation(
-        db, assistance.demandeur_id, current_user.id
+        db, assistance.demandeur_id, profil.user_id
     )
-    premier_message = (
-        f"Bonjour {assistance.demandeur.nom_complet}, je viens d'accepter "
-        f"votre demande d'assistance (« {assistance.type_panne} »). J'arrive !"
-    )
+    nom_mec = profil.user.nom_complet if profil.user else "mécanicien"
     db.add(
         Message(
             id=uuid.uuid4(),
             conversation_id=conv.id,
-            expediteur_id=current_user.id,
-            contenu=premier_message,
+            expediteur_id=assistance.demandeur_id,
+            contenu=(
+                f"Bonjour {nom_mec}, je retiens votre profil pour "
+                f"mon assistance (« {assistance.type_panne} »). "
+                "Pouvons-nous convenir de l'heure de votre intervention ?"
+            ),
             type="texte",
         )
     )
     conv.updated_at = now
 
+    # ── Notification 3 : mécanicien ACCEPTÉ ──
     await notify_user(
         db,
-        user_id=assistance.demandeur_id,
-        titre="Un mécanicien a accepté votre demande",
-        contenu=f"{current_user.nom_complet} prend en charge votre demande d'assistance. Il arrive !",
+        user_id=profil.user_id,
+        titre="Votre assistance a été acceptée",
+        contenu=(
+            "✅ Votre assistance a été acceptée. Le chauffeur vous a sélectionné "
+            "pour intervenir sur cette panne."
+        ),
         type_notif="assistance",
         lien=f"/dashboard/chat?conv={conv.id}",
         metadata={
-            "demande_id": str(assistance_id),
+            "demande_id": str(assistance.id),
             "mecanicien_id": str(profil.id),
             "conversation_id": str(conv.id),
+            "resultat": "accepte",
         },
         email=True,
         push=True,
     )
 
+    # ── Notification 4 : mécaniciens REJETÉS automatiquement ──
+    for p in rejetes:
+        await notify_user(
+            db,
+            user_id=p.mecanicien.user_id,
+            titre="Demande déjà prise en charge",
+            contenu=(
+                "ℹ️ Cette demande d'assistance a déjà été prise en charge par un "
+                "autre mécanicien situé à proximité du lieu de la panne. "
+                "Merci pour votre disponibilité."
+            ),
+            type_notif="assistance",
+            lien="/dashboard/mecanicien/assistance",
+            metadata={
+                "demande_id": str(assistance.id),
+                "mecanicien_id": str(p.mecanicien_id),
+                "resultat": "refuse",
+            },
+            push=True,
+        )
+
+    # ── Confirmation au chauffeur ──
+    await notify_user(
+        db,
+        user_id=assistance.demandeur_id,
+        titre="Mécanicien sélectionné",
+        contenu=(
+            "✅ Le mécanicien sélectionné a été informé de votre choix. "
+            f"Vous pouvez échanger avec {nom_mec} dès maintenant."
+        ),
+        type_notif="assistance",
+        lien=f"/dashboard/chat?conv={conv.id}",
+        metadata={
+            "demande_id": str(assistance.id),
+            "mecanicien_id": str(profil.id),
+            "conversation_id": str(conv.id),
+        },
+        push=True,
+    )
+
+    await broadcast_assistance_event(
+        {
+            "type": "assistance_taken",
+            "demande_id": str(assistance.id),
+            "demandeur_id": str(assistance.demandeur_id),
+            "mecanicien_id": str(profil.id),
+        }
+    )
+
     return {
-        "message": "Demande prise en charge",
-        "statut": "pris_en_charge",
-        "pris_en_charge_at": now.isoformat(),
+        "message": "Mécanicien sélectionné",
+        "statut": assistance.statut.value,
+        "mecanicien_id": str(profil.id),
         "conversation_id": str(conv.id),
+        "propositions_refusees": len(rejetes),
+    }
+
+
+@router.put("/assistance/{assistance_id}/propositions/{mecanicien_id}/reject")
+async def reject_proposition(
+    assistance_id: uuid.UUID,
+    mecanicien_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Le CHAUFFEUR rejette une proposition précise (avant d'en accepter une autre).
+    Une fois qu'un mécanicien est sélectionné, plus aucune modification n'est
+    possible (400) — la sélection est définitive.
+    """
+    assistance = await _get_assistance_for_update(db, assistance_id)
+
+    if not _is_demandeur(current_user, assistance):
+        raise HTTPException(
+            status_code=403,
+            detail="Seul le chauffeur ayant créé la demande peut rejeter une proposition",
+        )
+    if assistance.statut != StatutAssistance.en_attente:
+        raise HTTPException(
+            status_code=400,
+            detail="Cette demande a déjà été attribuée à un mécanicien",
+        )
+
+    cible = next(
+        (p for p in assistance.propositions if str(p.id) == str(mecanicien_id)), None
+    )
+    if cible is None:
+        raise HTTPException(status_code=404, detail="Proposition non trouvée")
+    if cible.statut != StatutProposition.en_attente:
+        raise HTTPException(
+            status_code=400, detail="Cette proposition n'est plus en attente"
+        )
+
+    cible.statut = StatutProposition.refuse
+    await db.flush()
+
+    from app.utils.notifications import notify_user
+
+    await notify_user(
+        db,
+        user_id=cible.mecanicien.user_id,
+        titre="Proposition non retenue",
+        contenu=(
+            "ℹ️ Le chauffeur n'a pas retenu votre proposition pour cette demande "
+            "d'assistance. Merci pour votre disponibilité."
+        ),
+        type_notif="assistance",
+        lien="/dashboard/mecanicien/assistance",
+        metadata={
+            "demande_id": str(assistance.id),
+            "mecanicien_id": str(cible.mecanicien_id),
+            "resultat": "refuse",
+        },
+        push=True,
+    )
+
+    return {
+        "message": "Proposition rejetée",
+        "statut": cible.statut.value,
+        "nb_propositions_en_attente": sum(
+            1
+            for p in assistance.propositions
+            if p.statut == StatutProposition.en_attente
+        ),
     }
 
 
@@ -682,16 +1117,27 @@ async def get_assistance(
 ):
     result = await db.execute(
         select(DemandeAssistance)
-        .options(
-            selectinload(DemandeAssistance.demandeur),
-            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
-        )
+        .options(*_load_propositions_options())
         .where(DemandeAssistance.id == assistance_id)
     )
     assistance = result.scalar_one_or_none()
     if not assistance:
         raise HTTPException(status_code=404, detail="Demande non trouvée")
-    return _assistance_out(assistance)
+
+    profil = (
+        await _profil_mecanicien_of(db, current_user.id)
+        if current_user.role == UserRole.mecanicien
+        else None
+    )
+    d_lat, d_lng = _parse_wkt(assistance.localisation)
+    dist = None
+    if profil is not None and (d_lat, d_lng) != (0.0, 0.0):
+        p_lat, p_lng = _parse_wkt(profil.localisation)
+        if (p_lat, p_lng) != (0.0, 0.0):
+            dist = round(_haversine(d_lat, d_lng, p_lat, p_lng), 1)
+    return _assistance_out(
+        assistance, distance_km=dist, profil_mecanicien=profil
+    )
 
 
 @router.put("/assistance/{assistance_id}/statut")
@@ -703,24 +1149,53 @@ async def update_assistance_statut(
 ):
     result = await db.execute(
         select(DemandeAssistance)
-        .options(
-            selectinload(DemandeAssistance.demandeur),
-            selectinload(DemandeAssistance.mecanicien).selectinload(ProfilMecanicien.user),
-        )
+        .options(*_load_propositions_options())
         .where(DemandeAssistance.id == assistance_id)
     )
     assistance = result.scalar_one_or_none()
     if not assistance:
         raise HTTPException(status_code=404, detail="Demande non trouvée")
 
-    # Seul le mécanicien assigné peut modifier le statut
-    if assistance.mecanicien_id:
+    # ── Permissions strictes ──
+    # - l'administrateur peut tout faire ;
+    # - seul le mécanicien ASSIGNÉ (après sélection par le chauffeur) peut
+    #   faire avancer l'intervention (en_cours / terminee) ;
+    # - un mécanicien non sélectionné, un chauffeur ou un tiers ne peuvent PAS
+    #   modifier le statut (test : « un mécanicien rejeter essaie de changer
+    #   son statut » / « un mécanicien essaie d'accepter à la place du
+    #   chauffeur » → refusé par le backend).
+    if current_user.role == UserRole.admin:
+        pass
+    elif current_user.role == UserRole.mecanicien:
         profil_result = await db.execute(
             select(ProfilMecanicien).where(ProfilMecanicien.user_id == current_user.id)
         )
         profil = profil_result.scalar_one_or_none()
-        if not profil or str(profil.id) != str(assistance.mecanicien_id):
-            raise HTTPException(status_code=403, detail="Seul le mécanicien assigné peut modifier le statut")
+        if (
+            not profil
+            or not assistance.mecanicien_id
+            or str(profil.id) != str(assistance.mecanicien_id)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Seul le mécanicien sélectionné par le chauffeur peut modifier le statut",
+            )
+        if assistance.statut == StatutAssistance.en_attente:
+            raise HTTPException(
+                status_code=400,
+                detail="Le chauffeur n'a pas encore sélectionné de mécanicien",
+            )
+    elif not _is_demandeur(current_user, assistance):
+        raise HTTPException(status_code=403, detail="Accès non autorisé")
+
+    # Une demande attribuée ne peut jamais revenir en arrière : cela
+    # réouvrirait la sélection et casserait la règle « un seul mécanicien ».
+    if data.statut in (StatutAssistance.en_attente, StatutAssistance.pris_en_charge):
+        if assistance.statut == StatutAssistance.assignee:
+            raise HTTPException(
+                status_code=400,
+                detail="Le mécanicien a déjà été sélectionné : retour en arrière impossible",
+            )
 
     assistance.statut = data.statut
     await db.flush()

@@ -125,6 +125,21 @@ class StatutAssistance(str, enum.Enum):
     terminee = "terminee"
 
 
+class StatutProposition(str, enum.Enum):
+    """Statut d'une proposition de prise en charge d'un mécanicien.
+
+    NIVEAU 2 (indépendant du statut global de la demande) :
+    - en_attente : le mécanicien a proposé, le chauffeur n'a pas encore choisi.
+    - accepte    : le chauffeur a retenu ce mécanicien (un seul par demande).
+    - refuse     : rejeté (individuellement ou automatiquement après sélection
+                   d'un autre mécanicien).
+    """
+
+    en_attente = "en_attente"
+    accepte = "accepte"
+    refuse = "refuse"
+
+
 class TypeConversation(str, enum.Enum):
     directe = "directe"
     groupe = "groupe"

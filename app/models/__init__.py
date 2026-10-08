@@ -9,6 +9,7 @@ from app.models.enums import (
     StatutDocument,
     StatutIncident,
     StatutOffre,
+    StatutProposition,
     TarificationMecanicien,
     TypeActivite,
     TypeCamion,
@@ -37,6 +38,7 @@ from app.models.message import Message
 from app.models.incident import Incident, IncidentCommentaire
 from app.models.otp import OTPReset
 from app.models.assistance import DemandeAssistance
+from app.models.proposition import PropositionAssistance
 from app.models.candidature import Candidature
 from app.models.notification import Notification
 from app.models.notification_preferences import NotificationPreference, PushSubscription
@@ -62,6 +64,7 @@ __all__ = [
     "IncidentCommentaire",
     "OTPReset",
     "DemandeAssistance",
+    "PropositionAssistance",
     "Candidature",
     "Notification",
     "NotificationPreference",
@@ -85,6 +88,7 @@ __all__ = [
     "TypePanne",
     "Urgence",
     "StatutAssistance",
+    "StatutProposition",
     "TypeConversation",
     "TypeMessage",
     "TypeNotification",

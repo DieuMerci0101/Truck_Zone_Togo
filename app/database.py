@@ -69,6 +69,21 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_profil_version INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS metadata_json TEXT",
             "ALTER TABLE demandes_assistance ADD COLUMN IF NOT EXISTS pris_en_charge_at TIMESTAMPTZ",
+            # ── Propositions de prise en charge (plusieurs mécaniciens) ──
+            # Table créée par `create_all` si absente ; ces lignes garantissent
+            # la compatibilité avec une base déjà existante (idempotentes).
+            "ALTER TYPE statut_proposition ADD VALUE IF NOT EXISTS 'en_attente'",
+            "ALTER TYPE statut_proposition ADD VALUE IF NOT EXISTS 'accepte'",
+            "ALTER TYPE statut_proposition ADD VALUE IF NOT EXISTS 'refuse'",
+            "ALTER TABLE propositions_assistance ADD COLUMN IF NOT EXISTS distance_km DOUBLE PRECISION",
+            (
+                "DO $$ BEGIN IF NOT EXISTS ("
+                "SELECT 1 FROM pg_constraint WHERE conname = "
+                "'uq_proposition_assistance_demande_mecanicien') THEN "
+                "ALTER TABLE propositions_assistance ADD CONSTRAINT "
+                "uq_proposition_assistance_demande_mecanicien "
+                "UNIQUE (assistance_id, mecanicien_id); END IF; END $$;"
+            ),
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'passeport'",
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'rccm'",
             "ALTER TYPE type_document ADD VALUE IF NOT EXISTS 'patente'",

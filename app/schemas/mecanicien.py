@@ -146,6 +146,49 @@ class AssistanceUpdateStatut(BaseModel):
     statut: str = Field(..., pattern=r"^(en_attente|pris_en_charge|assignee|en_cours|terminee)$")
 
 
+class PropositionMecanicienOut(BaseModel):
+    """Une proposition de prise en charge émise par un mécanicien."""
+
+    id: uuid.UUID
+    assistance_id: uuid.UUID
+    mecanicien_id: uuid.UUID
+    user_id: uuid.UUID | None = None
+    statut: str  # en_attente | accepte | refuse
+    distance_km: float | None = None
+    nom_complet: str = ""
+    photo_profil: str | None = None
+    specialites: list[str] = []
+    annees_experience: int = 0
+    tarification: str = "Payant"
+    telephone: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_mecanicien_info(cls, data):
+        if isinstance(data, dict):
+            return data
+        mecanicien = getattr(data, "mecanicien", None)
+        user = getattr(mecanicien, "user", None) if mecanicien else None
+        if mecanicien is not None:
+            data.user_id = getattr(mecanicien, "user_id", None)
+            data.nom_complet = getattr(user, "nom_complet", "") if user else ""
+            data.photo_profil = getattr(user, "photo_profil", None) if user else None
+            data.telephone = getattr(user, "telephone", None) if user else None
+            data.specialites = list(getattr(mecanicien, "specialites", []) or [])
+            data.annees_experience = getattr(mecanicien, "annees_experience", 0) or 0
+            tarif = getattr(mecanicien, "tarification", "Payant")
+            data.tarification = (
+                tarif.value if hasattr(tarif, "value") else str(tarif or "Payant")
+            )
+        statut = getattr(data, "statut", None)
+        if statut is not None and hasattr(statut, "value"):
+            data.statut = statut.value
+        return data
+
+
 class AssistanceOut(BaseModel):
     id: uuid.UUID
     demandeur_id: uuid.UUID
@@ -162,6 +205,12 @@ class AssistanceOut(BaseModel):
     distance_km: Optional[float] = None
     pris_en_charge_at: Optional[datetime] = None
     created_at: datetime
+    # ── Nouveau workflow « plusieurs mécaniciens proposent » ──
+    # Historique complet des propositions (vide pour les anciennes demandes).
+    propositions: list[PropositionMecanicienOut] = []
+    # Proposition du mécanicien CONNECTÉ (rempli uniquement pour un mécanicien).
+    ma_proposition: Optional[PropositionMecanicienOut] = None
+    nb_propositions_en_attente: int = 0
 
     model_config = {"from_attributes": True}
 

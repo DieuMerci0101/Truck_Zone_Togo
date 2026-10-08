@@ -9,6 +9,7 @@ from app.models.enums import DisponibiliteMecanicien, TarificationMecanicien
 
 if TYPE_CHECKING:
     from app.models.assistance import DemandeAssistance
+    from app.models.proposition import PropositionAssistance
     from app.models.user import User
 
 
@@ -76,4 +77,8 @@ class ProfilMecanicien(TimestampMixin, Base):
     user: Mapped["User"] = relationship("User", back_populates="profil_mecanicien")
     demandes_recues: Mapped[list["DemandeAssistance"]] = relationship(
         "DemandeAssistance", back_populates="mecanicien"
+    )
+    # Propositions de prise en charge émises par ce mécanicien
+    propositions: Mapped[list["PropositionAssistance"]] = relationship(
+        "PropositionAssistance", back_populates="mecanicien"
     )

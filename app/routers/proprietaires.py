@@ -33,6 +33,11 @@ from app.schemas.proprietaire import (
     ProfilProprietaireUpdate,
 )
 from app.schemas.mecanicien import AssistanceCreate, AssistanceOut
+from app.routers.mecaniciens import (
+    _assistance_out as _shared_assistance_out,
+    _load_propositions_options,
+    notifier_mecaniciens_proches,
+)
 
 router = APIRouter(prefix="/api/proprietaires", tags=["Propriétaires"])
 
@@ -825,17 +830,8 @@ def _localisation_wkt(lat: float, lng: float) -> str:
 
 
 def _assistance_out(a: DemandeAssistance) -> AssistanceOut:
-    return AssistanceOut(
-        id=a.id,
-        demandeur_id=a.demandeur_id,
-        mecanicien_id=a.mecanicien_id,
-        type_panne=a.type_panne.value if hasattr(a.type_panne, "value") else a.type_panne,
-        description=a.description,
-        urgence=a.urgence.value if hasattr(a.urgence, "value") else a.urgence,
-        vehicule_description=a.vehicule_description,
-        statut=a.statut.value if hasattr(a.statut, "value") else a.statut,
-        created_at=a.created_at,
-    )
+    """Sérialise une demande (même format que le routeur mécaniciens)."""
+    return _shared_assistance_out(a)
 
 
 @router.post("/me/assistance", response_model=AssistanceOut, status_code=201)
@@ -858,23 +854,22 @@ async def create_assistance(
     await db.flush()
     await db.refresh(assistance)
 
-    from app.utils.notifications import notify_all_admins, notify_user
-    from app.models.mecanicien import ProfilMecanicien
-    from app.models.enums import UserRole
+    from app.utils.notifications import notify_all_admins
 
-    mecaniciens_result = await db.execute(
-        select(User).where(User.role == UserRole.mecanicien, User.is_active == True)
+    await notify_all_admins(
+        db,
+        titre="Nouvelle demande d'assistance",
+        contenu=(
+            f"{current_user.nom_complet} demande une assistance de type "
+            f"« {data.type_panne} » (urgence « {data.urgence} »)."
+        ),
+        type_notif="assistance",
+        lien="/admin/dashboard/assistance",
     )
-    mecaniciens = mecaniciens_result.scalars().all()
-    for mec in mecaniciens:
-        await notify_user(
-            db,
-            user_id=mec.id,
-            titre="Nouvelle demande d'assistance",
-            contenu=f"Une demande de type « {data.type_panne} » de urgence « {data.urgence } » a été créée par {current_user.nom_complet}.",
-            type_notif="assistance",
-            lien="/dashboard/mecanicien/assistance",
-        )
+
+    # Uniquement les mécaniciens proches, disponibles et vérifiés
+    # (rayon d'intervention + MECHANIC_ASSISTANCE_RADIUS_KM).
+    await notifier_mecaniciens_proches(db, assistance, current_user)
 
     await notify_user(
         db,
@@ -895,6 +890,7 @@ async def list_my_assistance(
 ):
     result = await db.execute(
         select(DemandeAssistance)
+        .options(*_load_propositions_options())
         .where(DemandeAssistance.demandeur_id == current_user.id)
         .order_by(DemandeAssistance.created_at.desc())
     )

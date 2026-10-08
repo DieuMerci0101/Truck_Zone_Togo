@@ -10,6 +10,7 @@ from app.models.enums import StatutAssistance, TypePanne, Urgence
 
 if TYPE_CHECKING:
     from app.models.mecanicien import ProfilMecanicien
+    from app.models.proposition import PropositionAssistance
     from app.models.user import User
 
 class DemandeAssistance(Base):
@@ -65,4 +66,12 @@ class DemandeAssistance(Base):
     )
     mecanicien: Mapped["ProfilMecanicien | None"] = relationship(
         "ProfilMecanicien", back_populates="demandes_recues"
+    )
+    # Historique des mécaniciens ayant proposé leur assistance
+    # (plusieurs propositions par demande, une seule retenue).
+    propositions: Mapped[list["PropositionAssistance"]] = relationship(
+        "PropositionAssistance",
+        back_populates="assistance",
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )
